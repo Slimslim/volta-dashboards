@@ -108,6 +108,28 @@
   }
   .sub { color: var(--muted-text); font-size: 12px; margin: 6px 0 0; line-height: 1.5; }
 
+  /* ---- Header right column (pill + refresh) ---- */
+  .head-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+  .refresh-btn {
+    appearance: none; cursor: pointer; font: inherit;
+    border: 1px solid var(--grid-line); background: transparent;
+    color: var(--body-text); font-size: 11px; font-weight: 600;
+    padding: 5px 12px; border-radius: 999px; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 6px;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .refresh-btn:hover:not(:disabled) { border-color: var(--electric-yellow); color: var(--electric-yellow); }
+  .refresh-btn:disabled { opacity: 0.6; cursor: default; }
+  .refresh-btn:focus-visible { outline: 2px solid var(--electric-yellow); outline-offset: 2px; }
+  .refresh-btn .glyph { font-size: 13px; line-height: 1; }
+  .mini-spin {
+    width: 11px; height: 11px; border: 2px solid var(--grid-line);
+    border-top-color: var(--electric-yellow); border-radius: 50%;
+    display: inline-block; animation: spin 0.8s linear infinite;
+  }
+  .refresh-msg { font-size: 10.5px; color: var(--muted-text); max-width: 240px; text-align: right; line-height: 1.35; }
+  .refresh-msg.err { color: var(--error); }
+
   /* ---- Filter tabs (BD / Events / Directory) ---- */
   .tabs {
     display: inline-flex; margin-top: 12px;
@@ -226,7 +248,14 @@
         <span class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span></span>
       </p>
     </div>
-    <div class="pill" id="pill">— CONTACTS</div>
+    <div class="head-right">
+      <div class="pill" id="pill">— CONTACTS</div>
+      <button class="refresh-btn hidden" id="refreshBtn" type="button"
+              title="Recompute all distributions from the live directory">
+        <span class="glyph" id="refreshGlyph">↻</span><span id="refreshLabel">Refresh</span>
+      </button>
+      <div class="refresh-msg hidden" id="refreshMsg"></div>
+    </div>
   </div>
 
   <div class="tabs" id="tabs" role="tablist"></div>
@@ -256,6 +285,12 @@ const CONFIG = {
   // Base path of the public Storage bucket the n8n nightly job writes to.
   // The page fetches  BUCKET_BASE + <slug> + ".json".
   BUCKET_BASE: "https://ajynejzgqmgufrbircad.supabase.co/storage/v1/object/public/public-dashboards/segment-matrix/",
+  // n8n webhook that reruns the "Segment Matrix — Nightly Dashboard Feeds"
+  // pipeline on demand (all three scopes). The Refresh button POSTs here, then
+  // the page polls the active feed until its generatedAt advances. The workflow
+  // is counts-only (no PII / no Apollo credits), and CORS is open on the webhook,
+  // so exposing this URL on the public embed only lets someone recompute counts.
+  REFRESH_WEBHOOK: "https://n8n.helios-server.synology.me/webhook/segment-matrix-refresh",
   // The filter tabs. Each maps an on-screen label to a feed slug (<slug>.json
   // in the bucket). Add a tab = add an entry here + produce that feed; order
   // here is the on-screen order. Same matrix structure, different scope.
@@ -542,6 +577,81 @@ async function load() {
   }
 }
 
+/* =========================================================================
+   ON-DEMAND REFRESH — POST the n8n webhook, then poll the watched scope's feed
+   until its server-stamped generatedAt advances. The webhook reruns the exact
+   nightly pipeline for all three scopes and responds immediately, so the work
+   happens in the background while we poll for the result.
+   ========================================================================= */
+let refreshing = false;
+
+function setRefreshBusy(busy) {
+  $("refreshBtn").disabled = busy;
+  $("refreshGlyph").outerHTML = busy
+    ? '<span class="mini-spin" id="refreshGlyph"></span>'
+    : '<span class="glyph" id="refreshGlyph">↻</span>';
+  $("refreshLabel").textContent = busy ? "Refreshing…" : "Refresh";
+}
+
+function refreshNote(msg, isErr) {
+  const m = $("refreshMsg");
+  if (!msg) { m.classList.add("hidden"); m.textContent = ""; m.classList.remove("err"); return; }
+  m.textContent = msg;
+  m.classList.toggle("err", !!isErr);
+  m.classList.remove("hidden");
+}
+
+async function triggerRefresh() {
+  if (refreshing || DEMO || !CONFIG.REFRESH_WEBHOOK) return;
+  refreshing = true;
+  setRefreshBusy(true);
+  refreshNote("Recomputing all distributions…", false);
+
+  const scope = activeScope;          // the tab we'll watch for the update
+  const baseline = lastGeneratedAt;   // server-stamped time of the feed on screen
+
+  try {
+    const res = await fetch(CONFIG.REFRESH_WEBHOOK, { method: "POST", mode: "cors" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (e) {
+    setRefreshBusy(false);
+    refreshing = false;
+    refreshNote(`Couldn't start the refresh (${e.message}).`, true);
+    return;
+  }
+
+  const started = Date.now();
+  const POLL_MS = 3000, TIMEOUT_MS = 90 * 1000;
+  const poll = async () => {
+    if (Date.now() - started > TIMEOUT_MS) {
+      setRefreshBusy(false);
+      refreshing = false;
+      refreshNote("Still running — the new numbers will appear automatically once ready.", false);
+      return;
+    }
+    try {
+      const res = await fetch(dataUrlFor(scope), { cache: "no-store" });
+      if (res.ok) {
+        const feed = await res.json();
+        const advanced = feed && Array.isArray(feed.data) &&
+          (!baseline || new Date(feed.generatedAt).getTime() > new Date(baseline).getTime());
+        if (advanced) {
+          // Only repaint if the watched tab is still the one on screen; either
+          // way the refresh is done (every scope was recomputed by the webhook).
+          if (scope === activeScope) { render(feed); lastFetchFailed = false; }
+          setRefreshBusy(false);
+          refreshing = false;
+          refreshNote("Updated just now.", false);
+          setTimeout(() => refreshNote(""), 4000);
+          return;
+        }
+      }
+    } catch { /* transient fetch error — keep polling */ }
+    setTimeout(poll, POLL_MS);
+  };
+  setTimeout(poll, POLL_MS);
+}
+
 function renderTabs() {
   const box = $("tabs");
   box.innerHTML = "";
@@ -567,6 +677,13 @@ function switchView(slug) {
 function start() {
   $("title").textContent = PARAMS.get("title") || CONFIG.TITLE;
   renderTabs();
+  // The Refresh button only makes sense against a live pipeline — hide it in
+  // demo mode (no real feeds to recompute).
+  if (!DEMO && CONFIG.REFRESH_WEBHOOK) {
+    const btn = $("refreshBtn");
+    btn.classList.remove("hidden");
+    btn.addEventListener("click", triggerRefresh);
+  }
   showState("loading");
   load();
   refreshTimer = setInterval(load, CONFIG.REFRESH_MS);
