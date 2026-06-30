@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<!--
+  Contact Distribution heatmap — reusable Notion /embed target.
+
+  ONE page, many processes. The matrix STRUCTURE is fixed (the SGO company-type
+  × role-profile taxonomy, defined in the ROLES / COMPANIES / PARTNERS blocks
+  below); only the SCOPE — which contacts are counted — changes per process.
+
+  Pick the scope with a query param on the embed URL:
+      …/contact-matrix-heatmap.html?scope=bd-outreach
+      …/contact-matrix-heatmap.html?scope=all-directory
+      …/contact-matrix-heatmap.html?scope=event-dcd-ny-2026
+  The page fetches  <BUCKET_BASE><scope>.json  and uses the feed's own `scope`
+  field as the subtitle. Add a process = produce a new feed JSON + embed the
+  same page with a new ?scope. No per-process code.
+
+  IMPORTANT: this file intentionally has NO Jekyll front matter. Jekyll copies
+  front-matter-less files verbatim, so the `{{ }}` / `{% %}` sequences in the JS
+  below are NOT run through Liquid. Do not add a `---` block to the top.
+
+  Self-contained by design: inline CSS + JS, zero external/CDN requests, so it
+  loads reliably inside Notion's sandboxed iframe.
+
+  The JSON feed is counts-only by construction (see the n8n workflow + the
+  scoped GROUP BY). This page must NEVER render names or emails — only the
+  aggregate cell counts it is given.
+
+  Preview without a live feed: append ?demo=1 to the URL (or leave CONFIG.DEMO
+  true). Flip CONFIG.DEMO to false once the feeds are live.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Contact Distribution</title>
+<style>
+  /* ---- Brand palette (mirrors outreach-heatmap-from-supabase.py) ---- */
+  :root {
+    --true-black: #000000;
+    --electric-yellow: #FF9D02;
+    --chalk: #F2F2F2;
+    --empty-fill: #F2F2F2;
+    --empty-text: #A6A6A6;
+    --partner-fill: #E6E6E6;
+    --partner-text: #404040;
+    --grid-line: #D9D9D9;
+    --page-bg: #FFFFFF;
+    --body-text: #000000;
+    --muted-text: #737373;
+    --header-bg: #000000;
+    --header-text: #F2F2F2;
+    --tier1-bg: #000000;
+    --tier2-bg: #595959;
+    --tier3-bg: #A6A6A6;
+    --tier-text: #F2F2F2;
+    --total-bg: #1A1A1A;
+    --live-dot: #2ECC71;
+    --error: #C0392B;
+    /* ramp endpoints, also exposed to JS */
+    --ramp-from: 242, 242, 242;   /* chalk  */
+    --ramp-to: 255, 157, 2;       /* electric yellow */
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --chalk: #1C1C1C;
+      --empty-fill: #1C1C1C;
+      --empty-text: #5A5A5A;
+      --partner-fill: #2A2A2A;
+      --partner-text: #B0B0B0;
+      --grid-line: #333333;
+      --page-bg: #0E0E0E;
+      --body-text: #ECECEC;
+      --muted-text: #8A8A8A;
+      --header-bg: #000000;
+      --header-text: #F2F2F2;
+      --tier1-bg: #000000;
+      --tier2-bg: #3A3A3A;
+      --tier3-bg: #5A5A5A;
+      --tier-text: #F2F2F2;
+      --total-bg: #000000;
+      --ramp-from: 28, 28, 28;    /* dark chalk */
+      --ramp-to: 255, 157, 2;     /* electric yellow */
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--page-bg);
+    color: var(--body-text);
+    font-family: "Sora", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { padding: 18px 18px 26px; max-width: 1200px; margin: 0 auto; }
+
+  /* ---- Header ---- */
+  .head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 4px;
+  }
+  .title { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .pill {
+    background: var(--electric-yellow); color: var(--true-black);
+    font-size: 11px; font-weight: 700; letter-spacing: 0.02em;
+    padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+  }
+  .sub { color: var(--muted-text); font-size: 12px; margin: 6px 0 0; line-height: 1.5; }
+
+  /* ---- Filter tabs (BD / Events / Directory) ---- */
+  .tabs {
+    display: inline-flex; margin-top: 12px;
+    border: 1px solid var(--grid-line); border-radius: 8px; overflow: hidden;
+  }
+  .tab {
+    appearance: none; border: none; background: transparent;
+    color: var(--muted-text); font: inherit; font-size: 12px; font-weight: 600;
+    padding: 7px 18px; cursor: pointer; border-right: 1px solid var(--grid-line);
+    transition: background 0.12s, color 0.12s;
+  }
+  .tab:last-child { border-right: none; }
+  .tab:hover { color: var(--body-text); }
+  .tab.active { background: var(--electric-yellow); color: var(--true-black); }
+  .tab:focus-visible { outline: 2px solid var(--electric-yellow); outline-offset: -2px; }
+  .scope-label { color: var(--body-text); font-weight: 600; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--live-dot); display: inline-block;
+  }
+  .dot.stale { background: var(--muted-text); }
+  .dot.err   { background: var(--error); }
+
+  /* ---- Table ---- */
+  .scroll {
+    margin-top: 14px; overflow: auto; max-height: 78vh;
+    border: 1px solid var(--grid-line); border-radius: 6px;
+  }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12.5px; }
+  th, td { padding: 7px 9px; border-bottom: 1px solid var(--grid-line);
+           border-right: 1px solid var(--grid-line); white-space: nowrap; }
+  th:last-child, td:last-child { border-right: none; }
+
+  /* number cells: tabular alignment */
+  td.num, th.num, td.total, th.tot-h {
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  thead th {
+    position: sticky; top: 0; z-index: 3;
+    background: var(--header-bg); color: var(--header-text);
+    font-weight: 600; font-size: 11.5px; text-align: center;
+    line-height: 1.25; vertical-align: middle;
+  }
+  /* sticky first two columns (tier + company) */
+  .c-tier  { position: sticky; left: 0;    z-index: 2; width: 42px; text-align: center;
+             font-weight: 600; color: var(--tier-text); }
+  .c-comp  { position: sticky; left: 42px; z-index: 2; min-width: 200px; text-align: left;
+             background: var(--page-bg); }
+  thead .c-tier, thead .c-comp { z-index: 4; }
+  thead .c-tier { background: var(--header-bg); }
+  thead .c-comp { background: var(--header-bg); color: var(--header-text); text-align: left; }
+
+  td.c-tier.t1 { background: var(--tier1-bg); }
+  td.c-tier.t2 { background: var(--tier2-bg); }
+  td.c-tier.t3 { background: var(--tier3-bg); }
+
+  td.total { font-weight: 700; background: var(--total-bg); color: var(--header-text); }
+  th.tot-h { background: var(--header-bg); color: var(--electric-yellow); }
+
+  /* partner band */
+  tr.band td {
+    background: var(--tier2-bg); color: var(--chalk);
+    font-weight: 600; font-size: 10.5px; letter-spacing: 0.03em; text-align: left;
+  }
+  tr.partner td { background: var(--partner-fill); color: var(--partner-text); font-style: italic; }
+  tr.partner .c-comp { background: var(--partner-fill); }
+  td.partner-span { text-align: center; }
+
+  /* totals footer */
+  tfoot td {
+    position: sticky; bottom: 0; z-index: 2;
+    background: var(--total-bg); color: var(--header-text);
+    font-weight: 700; border-top: 2px solid var(--grid-line);
+  }
+  tfoot td.c-tier, tfoot td.c-comp { background: var(--total-bg); color: var(--header-text);
+                                     text-align: left; font-style: normal; }
+
+  /* ---- Legend ---- */
+  .legend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            margin-top: 14px; font-size: 11px; color: var(--muted-text); }
+  .legend b { color: var(--body-text); font-weight: 600; margin-right: 4px; }
+  .swatch { width: 30px; height: 18px; border: 1px solid var(--grid-line);
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 600; color: var(--body-text);
+            font-variant-numeric: tabular-nums; }
+
+  /* ---- States ---- */
+  .state { padding: 40px 12px; text-align: center; color: var(--muted-text); font-size: 13px; }
+  .state.error { color: var(--error); }
+  .spinner {
+    width: 22px; height: 22px; margin: 0 auto 12px;
+    border: 3px solid var(--grid-line); border-top-color: var(--electric-yellow);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none !important; }
+
+  @media (max-width: 640px) {
+    .title { font-size: 16px; }
+    table { font-size: 11px; }
+    .c-comp { min-width: 150px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1 class="title" id="title">Contact Distribution</h1>
+      <p class="sub">
+        <span class="scope-label" id="scopeLabel"></span>
+        <span class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span></span>
+      </p>
+    </div>
+    <div class="pill" id="pill">— CONTACTS</div>
+  </div>
+
+  <div class="tabs" id="tabs" role="tablist"></div>
+
+  <div id="loading" class="state"><div class="spinner"></div>Loading distribution…</div>
+  <div id="error" class="state error hidden"></div>
+
+  <div class="scroll hidden" id="tableWrap">
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+      <tfoot id="tfoot"></tfoot>
+    </table>
+  </div>
+
+  <div class="legend hidden" id="legend"></div>
+</div>
+
+<script>
+/* =========================================================================
+   CONFIG — everything you'd normally tweak lives here.
+   ========================================================================= */
+const CONFIG = {
+  // Default heading. The per-process detail comes from the feed's `scope`
+  // field, shown as the subtitle, so this rarely needs to change.
+  TITLE: "Contact Distribution",
+  // Base path of the public Storage bucket the n8n nightly job writes to.
+  // The page fetches  BUCKET_BASE + <slug> + ".json".
+  BUCKET_BASE: "https://ajynejzgqmgufrbircad.supabase.co/storage/v1/object/public/public-dashboards/segment-matrix/",
+  // The filter tabs. Each maps an on-screen label to a feed slug (<slug>.json
+  // in the bucket). Add a tab = add an entry here + produce that feed; order
+  // here is the on-screen order. Same matrix structure, different scope.
+  VIEWS: [
+    { slug: "bd-outreach",   label: "BD" },
+    { slug: "events",        label: "Events" },
+    { slug: "all-directory", label: "Directory" },
+  ],
+  // Tab shown first when the embed URL has no ?scope= param.
+  DEFAULT_VIEW: "bd-outreach",
+  REFRESH_MS: 60 * 60 * 1000,   // re-fetch cadence (data only changes nightly)
+  // DEMO: render the baked-in sample instead of fetching. Default false so the
+  // live embed never shows fake numbers; append ?demo=1 to any URL to preview
+  // (works on a local file:/// open too).
+  DEMO: false,
+};
+
+/* =========================================================================
+   TAXONOMY — fixed grid structure shared by every scope. The feed only carries
+   {row, col, value}; this page owns ordering, tiers, and the partner band, so
+   the grid is identical across every process.
+
+   CANONICAL SIBLING: docs/brainstorm/assets/outreach-heatmap-from-supabase.py
+   holds the same ROLES / COMPANIES / PARTNERS taxonomy and brand palette. The
+   DB function (segment_matrix) deliberately does NOT hardcode the taxonomy, so
+   these two renderers are the only copies — if you change a company type, role,
+   tier, partner entry, or the ramp colors, update BOTH files in the same change.
+   ========================================================================= */
+const ROLES = [
+  "Engineering / Technical",
+  "Procurement / Sourcing",
+  "Project / Program Management",
+  "Development / Strategy",
+  "Finance / Capital Allocation",
+  "Operations",
+  "Business Development / Sales",
+];
+// shorter column headers (\n becomes a line break)
+const ROLE_LABELS = {
+  "Engineering / Technical": "Engineering /\nTechnical",
+  "Procurement / Sourcing": "Procurement /\nSourcing",
+  "Project / Program Management": "Project /\nProgram Mgmt",
+  "Development / Strategy": "Development /\nStrategy",
+  "Finance / Capital Allocation": "Finance /\nCapital",
+  "Operations": "Operations",
+  "Business Development / Sales": "BD / Sales",
+};
+const COMPANIES = [
+  { tier: "T1", name: "Data Center Developer" },
+  { tier: "T1", name: "Hyperscaler" },
+  { tier: "T1", name: "Procurement Company" },
+  { tier: "T1", name: "EPC" },
+  { tier: "T2", name: "Utility" },
+  { tier: "T2", name: "EAAS" },
+  { tier: "T2", name: "General Contractor" },
+  { tier: "T2", name: "Design & Engineering" },
+  { tier: "T2", name: "Data Center Operator / Colo" },
+  { tier: "T2", name: "Land & Site Broker" },
+  { tier: "T3", name: "Capital Partner" },
+];
+const PARTNERS = [
+  { tier: "T3", name: "Equipment Manufacturer" },
+  { tier: "T3", name: "Equipment Vendor" },
+];
+
+/* Baked-in sample so the page renders before any feed exists. Illustrative
+   counts only; replaced by the live feed when CONFIG.DEMO = false. */
+const DEMO_FEED = {
+  generatedAt: "2026-06-29T00:00:00Z",
+  scope: "Sample data (no live feed yet)",
+  data: [
+    { row: "Design & Engineering", col: "Business Development / Sales", value: 6 },
+    { row: "Design & Engineering", col: "Development / Strategy", value: 14 },
+    { row: "Design & Engineering", col: "Engineering / Technical", value: 98 },
+    { row: "Design & Engineering", col: "Operations", value: 4 },
+    { row: "Design & Engineering", col: "Procurement / Sourcing", value: 6 },
+    { row: "Design & Engineering", col: "Project / Program Management", value: 20 },
+    { row: "EPC", col: "Business Development / Sales", value: 23 },
+    { row: "EPC", col: "Development / Strategy", value: 35 },
+    { row: "EPC", col: "Engineering / Technical", value: 273 },
+    { row: "EPC", col: "Operations", value: 15 },
+    { row: "EPC", col: "Procurement / Sourcing", value: 462 },
+    { row: "EPC", col: "Project / Program Management", value: 109 },
+    { row: "General Contractor", col: "Development / Strategy", value: 1 },
+    { row: "General Contractor", col: "Engineering / Technical", value: 23 },
+    { row: "General Contractor", col: "Operations", value: 1 },
+    { row: "General Contractor", col: "Procurement / Sourcing", value: 16 },
+    { row: "General Contractor", col: "Project / Program Management", value: 16 },
+  ],
+};
+
+/* ========================================================================= */
+
+const $ = id => document.getElementById(id);
+const PARAMS = new URLSearchParams(location.search);
+const DEMO = CONFIG.DEMO || PARAMS.get("demo") === "1";
+const VALID = new Set(CONFIG.VIEWS.map(v => v.slug));
+const cleanSlug = s => (s || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
+const labelFor = slug => (CONFIG.VIEWS.find(v => v.slug === slug) || {}).label || slug;
+// feed slug is used to build a bucket path — only known tab slugs are allowed,
+// so the fetch is locked to our bucket (no traversal / arbitrary URLs).
+const dataUrlFor = slug => CONFIG.BUCKET_BASE + slug + ".json";
+// initial tab: ?scope= / ?view= if it names a known tab, else the default.
+let activeScope = (() => {
+  const req = cleanSlug(PARAMS.get("scope") || PARAMS.get("view"));
+  return VALID.has(req) ? req : CONFIG.DEFAULT_VIEW;
+})();
+
+let refreshTimer = null;
+let agoTimer = null;
+let lastGeneratedAt = null;
+let lastFetchFailed = false;
+
+// Read the CSS ramp endpoints once per render (they only change with the OS
+// theme). Pass the parsed ramp into rampColor so it isn't recomputed per cell.
+function readRamp() {
+  const style = getComputedStyle(document.documentElement);
+  return {
+    from: style.getPropertyValue("--ramp-from").split(",").map(Number),
+    to: style.getPropertyValue("--ramp-to").split(",").map(Number),
+  };
+}
+function rampColor(n, max, ramp) {
+  if (!n || n <= 0 || max <= 0) return "var(--empty-fill)";
+  const t = Math.min(1, Math.sqrt(n / max));   // sqrt scaling, like the Python
+  const rgb = ramp.from.map((c, i) => Math.round(c + t * (ramp.to[i] - c)));
+  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+}
+
+function fmtAgo(iso) {
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return "unknown time";
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function setStatus(kind, generatedAt) {
+  const dot = $("dot"), txt = $("statusText");
+  dot.className = "dot" + (kind === "error" ? " err" : kind === "stale" ? " stale" : "");
+  if (kind === "error") { txt.textContent = "Failed to load — retrying"; return; }
+  lastGeneratedAt = generatedAt;
+  txt.textContent = `live · generated ${fmtAgo(generatedAt)}`;
+}
+
+function tickAgo() {
+  // Don't repaint a currently-failing refresh as "live" — leave the error
+  // indicator up until a fetch succeeds again.
+  if (lastFetchFailed) return;
+  if (lastGeneratedAt) {
+    const stale = (Date.now() - new Date(lastGeneratedAt).getTime()) > 36 * 3600 * 1000;
+    setStatus(stale ? "stale" : "live", lastGeneratedAt);
+  }
+}
+
+function showState(which) {
+  $("loading").classList.toggle("hidden", which !== "loading");
+  $("error").classList.toggle("hidden", which !== "error");
+  $("tableWrap").classList.toggle("hidden", which !== "table");
+  $("legend").classList.toggle("hidden", which !== "table");
+}
+
+function render(feed) {
+  // index counts by "row|col"
+  const idx = new Map();
+  for (const cell of (feed.data || [])) {
+    if (typeof cell.value !== "number") continue;
+    idx.set(`${cell.row}|${cell.col}`, cell.value);
+  }
+  const get = (row, col) => idx.get(`${row}|${col}`) || 0;
+
+  // max over the customer grid only (partner band excluded), like the Python
+  let max = 0, grandTotal = 0;
+  for (const c of COMPANIES)
+    for (const r of ROLES) { const v = get(c.name, r); if (v > max) max = v; }
+  for (const v of idx.values()) grandTotal += v;
+  max = max || 1;
+  const ramp = readRamp();
+
+  // ---- header ----
+  let h = "<tr>";
+  h += `<th class="c-tier">Tier</th><th class="c-comp">Company Type</th>`;
+  for (const r of ROLES) h += `<th class="num">${ROLE_LABELS[r].replace(/\n/g, "<br>")}</th>`;
+  h += `<th class="tot-h">Total</th></tr>`;
+  $("thead").innerHTML = h;
+
+  // ---- body ----
+  const colTotals = ROLES.map(() => 0);
+  let rows = "";
+  for (const c of COMPANIES) {
+    let rowTotal = 0, cells = "";
+    ROLES.forEach((r, i) => {
+      const v = get(c.name, r);
+      rowTotal += v; colTotals[i] += v;
+      const bg = rampColor(v, max, ramp);
+      const fg = v > 0 ? "var(--body-text)" : "var(--empty-text)";
+      cells += `<td class="num" style="background:${bg};color:${fg};${v > 0 ? "font-weight:600;" : ""}">${v > 0 ? v : "–"}</td>`;
+    });
+    rows += `<tr>`
+      + `<td class="c-tier ${c.tier.toLowerCase()}">${c.tier}</td>`
+      + `<td class="c-comp">${c.name}</td>`
+      + cells
+      + `<td class="total">${rowTotal || "–"}</td>`
+      + `</tr>`;
+  }
+
+  // partner band
+  let partnerTotal = 0;
+  const colspan = ROLES.length + 1; // role cols + total col
+  rows += `<tr class="band"><td class="c-tier t3">&nbsp;</td>`
+    + `<td class="c-comp" style="background:var(--tier2-bg);color:var(--chalk);">PARTNER TRACK</td>`
+    + `<td colspan="${colspan}">out of scope for this matrix — row total shown instead of per-role split</td></tr>`;
+  for (const p of PARTNERS) {
+    let pt = 0;
+    for (const r of ROLES) pt += get(p.name, r);
+    pt += get(p.name, "Partner Track");   // partner contacts may carry this role bucket
+    partnerTotal += pt;
+    rows += `<tr class="partner"><td class="c-tier t3">${p.tier}</td>`
+      + `<td class="c-comp">${p.name}</td>`
+      + `<td class="partner-span" colspan="${colspan}">${pt} contacts — Partner Track</td></tr>`;
+  }
+  $("tbody").innerHTML = rows;
+
+  // ---- footer (column totals) ----
+  let f = `<tr><td class="c-tier">&nbsp;</td><td class="c-comp">Column total</td>`;
+  for (const t of colTotals) f += `<td class="total">${t || "–"}</td>`;
+  const customerTotal = colTotals.reduce((a, b) => a + b, 0);
+  f += `<td class="total">${customerTotal}</td></tr>`;
+  $("tfoot").innerHTML = f;
+
+  // ---- legend ----
+  const samples = [0, 1, Math.max(1, Math.round(max / 8)), Math.max(1, Math.round(max / 4)),
+                   Math.max(1, Math.round(max / 2)), max];
+  const seen = new Set();
+  let leg = `<b>Contacts</b>`;
+  for (const n of samples) {
+    if (seen.has(n)) continue; seen.add(n);
+    const bg = n > 0 ? rampColor(n, max, ramp) : "var(--empty-fill)";
+    leg += `<span class="swatch" style="background:${bg}">${n > 0 ? n : "–"}</span>`;
+  }
+  leg += `<span style="margin-left:6px">sqrt scale · grid max ${max}</span>`;
+  if (partnerTotal) leg += `<span style="margin-left:10px">Partner Track: ${partnerTotal} (excluded from ramp)</span>`;
+  // Cells whose row/column fall outside the fixed taxonomy (e.g. null company
+  // type or role) aren't placed in the grid — surface the count so the pill
+  // total reconciles, mirroring the Python "omitted from grid" note.
+  const omitted = grandTotal - customerTotal - partnerTotal;
+  if (omitted > 0) leg += `<span style="margin-left:10px">${omitted.toLocaleString()} with no company/role classification (omitted from grid)</span>`;
+  $("legend").innerHTML = leg;
+
+  // ---- chrome ----
+  $("scopeLabel").textContent = feed.scope ? feed.scope + " · " : "";
+  $("pill").textContent = `${grandTotal.toLocaleString()} CONTACTS`;
+  setStatus("live", feed.generatedAt);
+  showState("table");
+}
+
+async function load() {
+  try {
+    const scope = activeScope;            // capture: tab may change mid-fetch
+    let feed;
+    if (DEMO) {
+      feed = { ...DEMO_FEED, scope: labelFor(scope) + " — sample" };
+    } else {
+      const res = await fetch(dataUrlFor(scope), { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      feed = await res.json();
+    }
+    if (scope !== activeScope) return;    // a newer tab click superseded this
+    if (!feed || !Array.isArray(feed.data)) throw new Error("malformed feed");
+    render(feed);
+    lastFetchFailed = false;
+  } catch (e) {
+    lastFetchFailed = true;
+    setStatus("error");
+    $("error").textContent = `Could not load the "${labelFor(activeScope)}" distribution (${e.message}). Retrying on the next refresh.`;
+    // keep a prior good render on screen if we have one; only show the error
+    // state when nothing has rendered yet.
+    if ($("tableWrap").classList.contains("hidden")) showState("error");
+  }
+}
+
+function renderTabs() {
+  const box = $("tabs");
+  box.innerHTML = "";
+  for (const v of CONFIG.VIEWS) {
+    const b = document.createElement("button");
+    b.className = "tab" + (v.slug === activeScope ? " active" : "");
+    b.textContent = v.label;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", v.slug === activeScope ? "true" : "false");
+    b.addEventListener("click", () => switchView(v.slug));
+    box.appendChild(b);
+  }
+}
+
+function switchView(slug) {
+  if (slug === activeScope || !VALID.has(slug)) return;
+  activeScope = slug;
+  renderTabs();
+  showState("loading");
+  load();
+}
+
+function start() {
+  $("title").textContent = PARAMS.get("title") || CONFIG.TITLE;
+  renderTabs();
+  showState("loading");
+  load();
+  refreshTimer = setInterval(load, CONFIG.REFRESH_MS);
+  agoTimer = setInterval(tickAgo, 60 * 1000);
+}
+start();
+</script>
+</body>
+</html>
