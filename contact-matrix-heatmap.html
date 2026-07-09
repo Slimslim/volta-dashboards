@@ -59,6 +59,11 @@
     /* ramp endpoints, also exposed to JS */
     --ramp-from: 242, 242, 242;   /* chalk  */
     --ramp-to: 255, 157, 2;       /* electric yellow */
+    /* messaging-readiness marker: ink fill + opposite-value halo so it reads on
+       any cell (pale chalk, saturated yellow, dark). NOT the yellow accent —
+       yellow is the ramp max and would vanish on high-count cells. */
+    --mk-ink: #000000;
+    --mk-halo: #FFFFFF;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -80,6 +85,8 @@
       --total-bg: #000000;
       --ramp-from: 28, 28, 28;    /* dark chalk */
       --ramp-to: 255, 157, 2;     /* electric yellow */
+      --mk-ink: #F2F2F2;
+      --mk-halo: #0E0E0E;
     }
   }
 
@@ -171,6 +178,22 @@
     font-feature-settings: "tnum" 1;
   }
 
+  /* ---- Messaging-readiness marker ----
+     A small dot in a cell's bottom-left corner flags that an outreach message
+     exists for that (company × role) segment: filled = approved, hollow = draft.
+     It's a second, orthogonal signal on the count heatmap, so it uses the shape +
+     position channels the ramp doesn't (ramp owns fill/color). Data: the
+     hand-maintained READINESS map in the JS below. */
+  td.num { position: relative; }
+  .mk {
+    position: absolute; left: 3px; bottom: 3px;
+    width: 8px; height: 8px; border-radius: 50%;
+    box-sizing: border-box; pointer-events: none;
+    box-shadow: 0 0 0 1.5px var(--mk-halo);   /* halo carries it on any fill */
+  }
+  .mk-ready { background: var(--mk-ink); }                         /* approved */
+  .mk-draft { background: var(--mk-halo); border: 1.5px solid var(--mk-ink); } /* draft */
+
   thead th {
     position: sticky; top: 0; z-index: 3;
     background: var(--header-bg); color: var(--header-text);
@@ -219,6 +242,9 @@
             display: inline-flex; align-items: center; justify-content: center;
             font-size: 10px; font-weight: 600; color: var(--body-text);
             font-variant-numeric: tabular-nums; }
+  /* readiness markers reused in the legend (position:static, not corner-pinned) */
+  .legend .mk { position: static; }
+  .lg-mk { display: inline-flex; align-items: center; gap: 7px; }
 
   /* ---- States ---- */
   .state { padding: 40px 12px; text-align: center; color: var(--muted-text); font-size: 13px; }
@@ -235,6 +261,7 @@
     .title { font-size: 16px; }
     table { font-size: 11px; }
     .c-comp { min-width: 150px; }
+    .mk { width: 6px; height: 6px; left: 2px; bottom: 2px; box-shadow: 0 0 0 1px var(--mk-halo); }
   }
 </style>
 </head>
@@ -355,6 +382,71 @@ const PARTNERS = [
   { tier: "T3", name: "Equipment Manufacturer" },
   { tier: "T3", name: "Equipment Vendor" },
 ];
+
+/* =========================================================================
+   MESSAGING READINESS — INTERIM, HAND-MAINTAINED overlay.
+
+   A second, orthogonal signal on the count heatmap: which (company-type × role)
+   segments have an outreach message written, and at what stage. A cell shows a
+   corner dot when a message exists for that segment —
+       ● filled (mk-ready) = READY  — an approved-for-team-use template
+       ○ hollow (mk-draft) = DRAFT  — a template exists but isn't approved yet
+       (no dot)            = no template written for that cell
+   Version / brand / template detail lives in the hover title, not the cell — a
+   matrix answers "covered / not covered" at a glance; "which version" is a
+   drill-down. Today every approved message is brand SGO, cold-intro step, v1.0.
+
+   SOURCE OF TRUTH is Notion + internal/outreach/build_messaging.py (its APPROVED
+   and DRAFT dicts). This map is a hand-copied snapshot, filtered to the company
+   rows this grid actually renders (build_messaging.py's "Electrical Contractor"
+   and "Land Developer" segments aren't rows here, so they're omitted). It is
+   scope-independent: an approved message for a segment is the same on the BD,
+   Events, and Directory tabs, so the markers render identically across scopes.
+
+   MAINTENANCE: when a message is approved / drafted / retired, update this map by
+   hand — exactly like the ROLES / COMPANIES taxonomy above is hand-maintained.
+   When this set grows large or volatile, retire this map in favour of a per-cell
+   readiness flag carried by the nightly feed (segment_matrix + the n8n job).
+
+   Keys are "<company type>|<role>" using the EXACT row / column names above.
+   ========================================================================= */
+const READINESS = {
+  // READY — approved cold-intro templates (SGO · v1.0)
+  "Capital Partner|Finance / Capital Allocation":  { s: "ready", t: "Capital / Investor — Finance / Capital — First Email" },
+  "Data Center Developer|Development / Strategy":   { s: "ready", t: "Data Center Developer — Development / Strategy — First Email" },
+  "Data Center Developer|Engineering / Technical": { s: "ready", t: "Data Center Developer — Engineering — First Email" },
+  "Data Center Developer|Procurement / Sourcing":  { s: "ready", t: "Data Center Developer — Procurement — First Email" },
+  "EPC|Procurement / Sourcing":                    { s: "ready", t: "GC / EPC — Procurement — First Email" },
+  "General Contractor|Procurement / Sourcing":     { s: "ready", t: "GC / EPC — Procurement — First Email" },
+  "Procurement Company|Procurement / Sourcing":    { s: "ready", t: "Procurement Company — Procurement — First Email" },
+  // DRAFT — a template exists in Notion but is not yet approved
+  "EPC|Project / Program Management":              { s: "draft" },
+  "General Contractor|Project / Program Management": { s: "draft" },
+  "EPC|Development / Strategy":                     { s: "draft" },
+  "General Contractor|Development / Strategy":      { s: "draft" },
+  "Hyperscaler|Engineering / Technical":           { s: "draft" },
+  "Hyperscaler|Development / Strategy":             { s: "draft" },
+  "Hyperscaler|Procurement / Sourcing":            { s: "draft" },
+  "Procurement Company|Development / Strategy":     { s: "draft" },
+  "Utility|Engineering / Technical":               { s: "draft" },
+  "Utility|Development / Strategy":                 { s: "draft" },
+};
+
+// Marker HTML + hover title for a cell, or blanks when no message exists there.
+function readinessMarker(company, role) {
+  const r = READINESS[`${company}|${role}`];
+  if (!r) return { html: "", title: "" };
+  if (r.s === "ready")
+    return {
+      html: '<span class="mk mk-ready"></span>',
+      title: "Approved outreach message · SGO · cold intro · v1.0"
+             + (r.t ? " — " + r.t : ""),
+    };
+  return {
+    html: '<span class="mk mk-draft"></span>',
+    title: "Draft outreach message — template exists, not yet approved",
+  };
+}
 
 /* Baked-in sample so the page renders before any feed exists. Illustrative
    counts only; replaced by the live feed when CONFIG.DEMO = false. */
@@ -492,7 +584,11 @@ function render(feed) {
       rowTotal += v; colTotals[i] += v;
       const bg = rampColor(v, max, ramp);
       const fg = v > 0 ? "var(--body-text)" : "var(--empty-text)";
-      cells += `<td class="num" style="background:${bg};color:${fg};${v > 0 ? "font-weight:600;" : ""}">${v > 0 ? v : "–"}</td>`;
+      // Messaging-readiness marker renders regardless of count: a segment can
+      // have an approved message with zero sourced contacts yet, and vice versa —
+      // that count-vs-message crossing is exactly what this overlay surfaces.
+      const mk = readinessMarker(c.name, r);
+      cells += `<td class="num"${mk.title ? ` title="${mk.title}"` : ""} style="background:${bg};color:${fg};${v > 0 ? "font-weight:600;" : ""}">${v > 0 ? v : "–"}${mk.html}</td>`;
     });
     rows += `<tr>`
       + `<td class="c-tier ${c.tier.toLowerCase()}">${c.tier}</td>`
@@ -543,6 +639,10 @@ function render(feed) {
   // total reconciles, mirroring the Python "omitted from grid" note.
   const omitted = grandTotal - customerTotal - partnerTotal;
   if (omitted > 0) leg += `<span style="margin-left:10px">${omitted.toLocaleString()} with no company/role classification (omitted from grid)</span>`;
+  // readiness marker key (corner dots) — a distinct dimension from the count ramp
+  leg += `<span style="margin-left:14px"><b>Messaging</b></span>`
+       + `<span class="lg-mk"><span class="mk mk-ready"></span>approved</span>`
+       + `<span class="lg-mk"><span class="mk mk-draft"></span>draft</span>`;
   $("legend").innerHTML = leg;
 
   // ---- chrome ----
