@@ -1,22 +1,14 @@
 <!DOCTYPE html>
 <!--
-  Outreach Command Center — Notion /embed target (ADR-0053).
+  Outreach Command Center — Notion /embed target (ADR-0053). Compact build:
+  one stat strip + the message table, sized to fit a Notion embed height.
 
-  Self-contained: inline CSS + JS, zero external/CDN requests, so it loads
-  reliably inside Notion's sandboxed iframe. NO Jekyll front matter (do not add
-  a `---` block — Liquid would eat the `${}` in the JS).
+  Self-contained: inline CSS + JS, zero external/CDN requests. NO Jekyll front
+  matter (Liquid would eat the ${} in the JS).
 
-  COUNTS ONLY. Renders aggregate counts + message identities from
-  v_outreach_message_version_stats and outreach_sequence_deliverability. NEVER a
-  contact name or email — the mirror to the public volta-dashboards repo makes
-  this world-readable.
-
-  Build-time snapshot: DATA below is baked from the Supabase views on the
-  snapshot date. Refresh = re-run the query set + update DATA. Live-feed upgrade
-  path: replace DATA with a fetch of a counts-only JSON feed written daily by
-  outreach-stats-sync-v1, keyed by brand.
-
-  Verdict logic (the command-center layer) lives in verdict() — one place.
+  COUNTS ONLY — never a contact name or email (mirrors to the public
+  volta-dashboards repo). Build-time snapshot; swap DATA for a per-brand JSON
+  feed to go live. Verdict logic lives in verdict().
 -->
 <html lang="en">
 <head>
@@ -25,111 +17,91 @@
 <title>Outreach Command Center</title>
 <style>
   :root {
-    --true-black:#000; --electric-yellow:#FF9D02; --chalk:#F2F2F2;
+    --electric-yellow:#FF9D02;
     --page-bg:#FFFFFF; --surface:#F7F7F6; --card:#FFFFFF;
     --body-text:#0A0A0A; --muted-text:#6B6B6B; --faint-text:#9A9A9A;
-    --grid-line:#E7E7E4; --header-bg:#000; --header-text:#F2F2F2;
-    --bar-track:#EFEEEB;
-    /* status (semantic — separate from the yellow accent) */
-    --good:#177245; --good-bg:#E7F3EC;
-    --warn:#B23A16; --warn-bg:#FBEAE3;
-    --neutral:#6B6B6B; --neutral-bg:#EFEEEB;
-    --live-dot:#2ECC71;
+    --grid-line:#E7E7E4; --header-bg:#000; --header-text:#F2F2F2; --bar-track:#EFEEEB;
+    --good:#177245; --good-bg:#E7F3EC; --warn:#B23A16; --warn-bg:#FBEAE3;
+    --neutral:#6B6B6B; --neutral-bg:#EFEEEB; --live-dot:#2ECC71;
   }
-  :root[data-theme="dark"], html[data-theme="dark"] {}
   @media (prefers-color-scheme: dark) {
     :root {
       --page-bg:#0C0C0C; --surface:#151513; --card:#171716;
       --body-text:#ECECEC; --muted-text:#9A9A97; --faint-text:#5E5E5A;
       --grid-line:#2A2A27; --bar-track:#26251F;
-      --good:#5CC98A; --good-bg:#12291D;
-      --warn:#F0895E; --warn-bg:#2E1811;
+      --good:#5CC98A; --good-bg:#12291D; --warn:#F0895E; --warn-bg:#2E1811;
       --neutral:#9A9A97; --neutral-bg:#232320;
     }
   }
   * { box-sizing:border-box; }
   html,body { margin:0; padding:0; background:var(--page-bg); color:var(--body-text);
     font-family:"Sora",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased; }
-  .wrap { padding:20px 20px 30px; max-width:1080px; margin:0 auto; }
+    -webkit-font-smoothing:antialiased; font-size:13px; }
+  .wrap { padding:14px 16px 16px; max-width:1040px; margin:0 auto; }
 
-  /* Header + brand tabs */
-  .head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
-  .title { font-size:21px; font-weight:600; letter-spacing:-0.015em; margin:0; }
-  .subtitle { color:var(--muted-text); font-size:13px; margin:4px 0 0; }
-  .live { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted-text); margin-top:8px; }
-  .live .dot { width:7px; height:7px; border-radius:50%; background:var(--live-dot); }
-  .tabs { display:flex; gap:4px; background:var(--surface); border:1px solid var(--grid-line); border-radius:10px; padding:4px; }
-  .tab { appearance:none; border:0; background:transparent; color:var(--muted-text); font:inherit; font-size:13px; font-weight:600;
-    padding:6px 14px; border-radius:7px; cursor:pointer; letter-spacing:0.01em; }
-  .tab[aria-selected="true"] { background:var(--true-black); color:var(--header-text); }
-  .tab:focus-visible { outline:2px solid var(--electric-yellow); outline-offset:2px; }
-  @media (prefers-color-scheme: dark) { .tab[aria-selected="true"] { background:#2C2C28; } }
-
-  .scope { display:flex; gap:22px; flex-wrap:wrap; margin:16px 2px 2px; color:var(--muted-text); font-size:12.5px; }
+  /* Header + tabs (one compact row) */
+  .head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .head-l { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .title { font-size:16px; font-weight:600; letter-spacing:-0.01em; margin:0; }
+  .scope { color:var(--muted-text); font-size:11.5px; }
   .scope b { color:var(--body-text); font-weight:600; }
+  .tabs { display:flex; gap:3px; background:var(--surface); border:1px solid var(--grid-line); border-radius:8px; padding:3px; }
+  .tab { appearance:none; border:0; background:transparent; color:var(--muted-text); font:inherit; font-size:12px; font-weight:600;
+    padding:4px 11px; border-radius:6px; cursor:pointer; }
+  .tab[aria-selected="true"] { background:#000; color:var(--header-text); }
+  .tab:focus-visible { outline:2px solid var(--electric-yellow); outline-offset:2px; }
+  @media (prefers-color-scheme: dark){ .tab[aria-selected="true"]{ background:#2C2C28; } }
 
-  .section-label { font-size:11px; font-weight:700; letter-spacing:0.09em; text-transform:uppercase; color:var(--faint-text); margin:26px 0 10px; }
-
-  /* KPI tiles */
-  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-  .kpis.deliver { grid-template-columns:repeat(3,1fr); }
-  .tile { background:var(--card); border:1px solid var(--grid-line); border-radius:12px; padding:14px 16px; }
-  .tile .k { font-size:11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color:var(--muted-text); }
-  .tile .v { font-size:29px; font-weight:700; letter-spacing:-0.02em; margin-top:6px; line-height:1; }
-  .tile .v .rate { font-size:15px; font-weight:600; color:var(--muted-text); margin-left:6px; }
-  .tile .sub { font-size:12px; color:var(--faint-text); margin-top:6px; }
-  .tile.accent .v { color:var(--electric-yellow); }
+  /* Stat strip */
+  .strip { display:flex; flex-wrap:wrap; border:1px solid var(--grid-line); border-radius:10px; background:var(--card);
+    margin-top:12px; overflow:hidden; }
+  .stat { flex:1 1 0; min-width:104px; padding:9px 14px; border-left:1px solid var(--grid-line); }
+  .stat:first-child { border-left:0; }
+  .stat .k { font-size:10px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:var(--muted-text); }
+  .stat .v { font-size:21px; font-weight:700; letter-spacing:-0.02em; margin-top:3px; line-height:1; }
+  .stat .v .r { font-size:12px; font-weight:600; color:var(--muted-text); margin-left:5px; }
+  .stat.hi .v { color:var(--electric-yellow); }
 
   /* Table */
-  .card-table { background:var(--card); border:1px solid var(--grid-line); border-radius:12px; overflow:hidden; }
+  .lbl { font-size:10.5px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase; color:var(--faint-text); margin:16px 2px 7px; }
+  .card-table { border:1px solid var(--grid-line); border-radius:10px; overflow:hidden; }
   .table-scroll { overflow-x:auto; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  thead th { background:var(--header-bg); color:var(--header-text); text-align:left; font-weight:600; font-size:11px;
-    letter-spacing:0.04em; text-transform:uppercase; padding:10px 14px; white-space:nowrap; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  thead th { background:var(--header-bg); color:var(--header-text); text-align:left; font-weight:600; font-size:10px;
+    letter-spacing:0.04em; text-transform:uppercase; padding:7px 12px; white-space:nowrap; }
   thead th.num { text-align:right; }
-  tbody td { padding:12px 14px; border-top:1px solid var(--grid-line); vertical-align:middle; }
+  tbody td { padding:8px 12px; border-top:1px solid var(--grid-line); vertical-align:middle; }
   tbody td.num { text-align:right; font-variant-numeric:tabular-nums; }
   .msg-seg { font-weight:600; }
-  .msg-key { font-size:11px; color:var(--faint-text); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; margin-top:2px; }
-  .rate-cell { min-width:150px; }
-  .rate-wrap { display:flex; align-items:center; gap:10px; }
-  .rate-num { font-variant-numeric:tabular-nums; font-weight:600; width:40px; text-align:right; }
-  .bar-track { flex:1; height:8px; background:var(--bar-track); border-radius:999px; overflow:hidden; min-width:60px; }
+  .msg-key { font-size:10.5px; color:var(--faint-text); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; margin-top:1px; }
+  .rate-cell { min-width:132px; }
+  .rate-wrap { display:flex; align-items:center; gap:8px; }
+  .rate-num { font-variant-numeric:tabular-nums; font-weight:600; width:34px; text-align:right; }
+  .bar-track { flex:1; height:7px; background:var(--bar-track); border-radius:999px; overflow:hidden; min-width:48px; }
   .bar-fill { height:100%; border-radius:999px; background:var(--electric-yellow); }
-  /* verdict chips */
-  .chip { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; letter-spacing:0.02em;
-    padding:3px 10px; border-radius:999px; white-space:nowrap; }
+  .chip { display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:999px; white-space:nowrap; }
   .chip .cdot { width:6px; height:6px; border-radius:50%; }
-  .v-scale  { color:var(--good);    background:var(--good-bg); }
-  .v-scale .cdot  { background:var(--good); }
-  .v-revise { color:var(--warn);    background:var(--warn-bg); }
-  .v-revise .cdot { background:var(--warn); }
-  .v-work,.v-gather { color:var(--neutral); background:var(--neutral-bg); }
-  .v-work .cdot,.v-gather .cdot { background:var(--neutral); }
-  tr.gather td { opacity:0.62; }
-  .divider-row td { padding:8px 14px; background:var(--surface); border-top:1px solid var(--grid-line);
-    font-size:10.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:var(--faint-text); }
+  .v-scale{color:var(--good);background:var(--good-bg);} .v-scale .cdot{background:var(--good);}
+  .v-revise{color:var(--warn);background:var(--warn-bg);} .v-revise .cdot{background:var(--warn);}
+  .v-work,.v-gather{color:var(--neutral);background:var(--neutral-bg);} .v-work .cdot,.v-gather .cdot{background:var(--neutral);}
+  tr.gather td{ opacity:0.6; }
+  .divider-row td{ padding:5px 12px; background:var(--surface); border-top:1px solid var(--grid-line);
+    font-size:9.5px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase; color:var(--faint-text); }
 
-  .fu { display:flex; align-items:center; gap:10px; margin:12px 2px 0; font-size:12.5px; color:var(--muted-text); }
-  .fu .chip { font-size:10.5px; }
-  .note { color:var(--muted-text); font-size:12.5px; line-height:1.55; margin:16px 2px 0; }
-  .note b { color:var(--body-text); }
-  .empty { text-align:center; padding:54px 20px; color:var(--muted-text); }
-  .empty .big { font-size:15px; font-weight:600; color:var(--body-text); margin-bottom:6px; }
-  .foot { color:var(--faint-text); font-size:11.5px; line-height:1.6; margin-top:26px; border-top:1px solid var(--grid-line); padding-top:12px; }
-  .foot code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
-  @media (max-width:720px){ .kpis{grid-template-columns:repeat(2,1fr);} }
+  .takeaway { font-size:11.5px; color:var(--muted-text); line-height:1.45; margin:10px 2px 0; }
+  .takeaway b { color:var(--body-text); }
+  .foot { color:var(--faint-text); font-size:10.5px; line-height:1.45; margin-top:10px; }
+  .empty { text-align:center; padding:40px 16px; color:var(--muted-text); }
+  .empty .big { font-size:14px; font-weight:600; color:var(--body-text); margin-bottom:5px; }
+  @media (max-width:640px){ .stat{ flex-basis:33%; } }
 </style>
 </head>
 <body data-palette="#FF9D02">
 <div class="wrap">
-
   <div class="head">
-    <div>
+    <div class="head-l">
       <h1 class="title">Outreach Command Center</h1>
-      <p class="subtitle">Cold-email performance &amp; next moves, by brand.</p>
-      <span class="live"><span class="dot"></span>Refreshes daily from Apollo</span>
+      <span class="scope" id="scope"></span>
     </div>
     <div class="tabs" role="tablist" aria-label="Brand">
       <button class="tab" role="tab" data-brand="SGO" aria-selected="true">SGO</button>
@@ -137,130 +109,86 @@
       <button class="tab" role="tab" data-brand="Ankura" aria-selected="false">Ankura</button>
     </div>
   </div>
-
   <div id="panel"></div>
-
-  <div class="foot">
-    Open / click rate = unique filtered (bot-screened) events ÷ delivered — the human signal; raw figures include
-    scanners &amp; prefetchers and read high. Verdicts: <b>Scale</b> ≥25% open · <b>Working</b> 12–25% · <b>Revise</b>
-    &lt;12% · <b>Gathering data</b> under 10 delivered (too early to judge). Counts only; no names or emails.
-    Source: <code>v_outreach_message_version_stats</code> + <code>outreach_sequence_deliverability</code>, synced daily
-    from Apollo. Snapshot: <strong>2026-07-27</strong>.
-  </div>
 </div>
 
 <script>
 // Baked snapshot (2026-07-27). Swap for a per-brand JSON fetch to go live.
 const DATA = {
   SGO: {
-    scope: { contacts: 93, cells: 4, note: "1 sequence live" },
-    top: { delivered:79, opened:14, opened_raw:35, clicked:13, clicked_raw:26, replied:0,
-            bounced:9, spam:8, spam_rate:0.091 },
+    scope: { contacts: 93, cells: 4 },
+    top: { delivered:79, opened:14, opened_raw:35, clicked:13, replied:0, bounced:9, spam:8, spam_rate:0.091 },
     messages: [
-      { seg:"Data Center Developer · Procurement",  key:"sgo-dcdev-proc-cold",   v:"1.0", sent:11, delivered:11, opened:4, clicked:4 },
-      { seg:"Data Center Developer · Engineering",  key:"sgo-dcdev-eng-cold",    v:"1.0", sent:11, delivered:11, opened:3, clicked:3 },
-      { seg:"GC / EPC · Procurement",               key:"sgo-gcepc-proc-cold",  v:"1.0", sent:54, delivered:54, opened:6, clicked:5 },
+      { seg:"Data Center Developer · Procurement", key:"sgo-dcdev-proc-cold", v:"1.0", sent:11, delivered:11, opened:4, clicked:4 },
+      { seg:"Data Center Developer · Engineering", key:"sgo-dcdev-eng-cold",  v:"1.0", sent:11, delivered:11, opened:3, clicked:3 },
+      { seg:"GC / EPC · Procurement",              key:"sgo-gcepc-proc-cold", v:"1.0", sent:54, delivered:54, opened:6, clicked:5 },
       { seg:"Data Center Developer · Development / Strategy", key:"sgo-dcdev-bizdev-cold", v:"1.0", sent:2, delivered:2, opened:1, clicked:1 }
-    ],
-    followups: { sent:0 }
+    ]
   },
-  CEEG: null,
-  Ankura: null
+  CEEG: null, Ankura: null
 };
-
-const MIN_N = 10; // delivered below this = "gathering data"
+const MIN_N = 10;
 function verdict(opened, delivered){
-  if (delivered < MIN_N) return { label:"Gathering data", cls:"v-gather" };
-  const r = opened / delivered;
+  if (delivered < MIN_N) return { label:"Gathering", cls:"v-gather" };
+  const r = opened/delivered;
   if (r >= 0.25) return { label:"Scale",   cls:"v-scale"  };
   if (r >= 0.12) return { label:"Working", cls:"v-work"   };
   return { label:"Revise", cls:"v-revise" };
 }
 const pct = (n,d) => d ? Math.round(n/d*100) : 0;
 
-function tile(k,v,rate,sub,accent){
-  return `<div class="tile ${accent?'accent':''}"><div class="k">${k}</div>`
-    + `<div class="v">${v}${rate!=null?`<span class="rate">${rate}</span>`:''}</div>`
-    + `<div class="sub">${sub}</div></div>`;
-}
+function stat(k,v,rate,hi){ return `<div class="stat ${hi?'hi':''}"><div class="k">${k}</div>`
+  + `<div class="v">${v}${rate!=null?`<span class="r">${rate}</span>`:''}</div></div>`; }
 
 function renderSGO(d){
-  const t = d.top, oR = pct(t.opened,t.delivered), cR = pct(t.clicked,t.delivered);
-  // rank: reliable (delivered>=MIN_N) by open rate desc, then gathering
-  const rows = d.messages.map(m => ({...m, or: m.opened/m.delivered, ready: m.delivered>=MIN_N}));
+  const t=d.top, oR=pct(t.opened,t.delivered), cR=pct(t.clicked,t.delivered);
+  document.getElementById("scope").innerHTML =
+    `<b>${d.scope.contacts}</b> contacts · <b>${d.scope.cells}</b> messages · updated 2026-07-27`;
+  const rows = d.messages.map(m=>({...m, or:m.opened/m.delivered, ready:m.delivered>=MIN_N}));
   const ready = rows.filter(r=>r.ready).sort((a,b)=>b.or-a.or);
   const early = rows.filter(r=>!r.ready).sort((a,b)=>b.or-a.or);
-
-  const rowHtml = (m,gather) => {
-    const vd = verdict(m.opened, m.delivered), o = pct(m.opened,m.delivered);
-    return `<tr class="${gather?'gather':''}">`
-      + `<td><div class="msg-seg">${m.seg}</div><div class="msg-key">${m.key} · v${m.v}</div></td>`
+  const row = (m,g) => { const vd=verdict(m.opened,m.delivered), o=pct(m.opened,m.delivered);
+    return `<tr class="${g?'gather':''}"><td><div class="msg-seg">${m.seg}</div><div class="msg-key">${m.key} · v${m.v}</div></td>`
       + `<td class="num">${m.sent}</td><td class="num">${m.delivered}</td>`
       + `<td class="rate-cell"><div class="rate-wrap"><span class="rate-num">${o}%</span>`
       + `<span class="bar-track"><span class="bar-fill" style="width:${o}%"></span></span></div></td>`
       + `<td class="num">${m.opened}</td><td class="num">${m.clicked}</td>`
-      + `<td><span class="chip ${vd.cls}"><span class="cdot"></span>${vd.label}</span></td></tr>`;
-  };
-
+      + `<td><span class="chip ${vd.cls}"><span class="cdot"></span>${vd.label}</span></td></tr>`; };
   return `
-    <div class="scope">
-      <span><b>${d.scope.contacts}</b> contacts reached</span>
-      <span><b>${d.scope.cells}</b> message cells active</span>
-      <span><b>${d.scope.note}</b></span>
+    <div class="strip">
+      ${stat("Delivered", t.delivered)}
+      ${stat("Opened", t.opened, oR+"%", true)}
+      ${stat("Clicked", t.clicked, cR+"%", true)}
+      ${stat("Replied", t.replied)}
+      ${stat("Bounced", t.bounced)}
+      ${stat("Spam", t.spam, Math.round(t.spam_rate*100)+"%")}
     </div>
-
-    <div class="section-label">Engagement · of delivered</div>
-    <div class="kpis">
-      ${tile("Delivered", t.delivered, null, "reached an inbox")}
-      ${tile("Opened", t.opened, oR+"%", t.opened_raw+" incl. bots &amp; scanners", true)}
-      ${tile("Clicked", t.clicked, cR+"%", t.clicked_raw+" incl. bots &amp; scanners", true)}
-      ${tile("Replied", t.replied, "0%", "follow-ups not yet sent")}
-    </div>
-
-    <div class="section-label">Deliverability</div>
-    <div class="kpis deliver">
-      ${tile("Bounced", t.bounced, null, "undeliverable addresses")}
-      ${tile("Spam-blocked", t.spam, Math.round(t.spam_rate*100)+"%", "sender reputation, warming up")}
-      ${tile("Unique opens (raw)", t.opened_raw, null, "unfiltered reach signal")}
-    </div>
-
-    <div class="section-label">By message · cold email — ranked by open rate</div>
+    <div class="lbl">By message · cold email — ranked by open rate</div>
     <div class="card-table"><div class="table-scroll"><table>
       <thead><tr><th>Message</th><th class="num">Sent</th><th class="num">Deliv.</th>
-        <th style="width:168px">Open rate</th><th class="num">Opened</th><th class="num">Clicked</th><th>Next move</th></tr></thead>
+        <th style="width:150px">Open rate</th><th class="num">Op.</th><th class="num">Cl.</th><th>Next move</th></tr></thead>
       <tbody>
-        ${ready.map(m=>rowHtml(m,false)).join("")}
-        ${early.length ? `<tr class="divider-row"><td colspan="7">Too early to judge — under ${MIN_N} delivered</td></tr>` : ""}
-        ${early.map(m=>rowHtml(m,true)).join("")}
+        ${ready.map(m=>row(m,false)).join("")}
+        ${early.length?`<tr class="divider-row"><td colspan="7">Too early — under ${MIN_N} delivered · follow-ups (FU1/FU2) not sent yet</td></tr>`:""}
+        ${early.map(m=>row(m,true)).join("")}
       </tbody>
     </table></div></div>
-
-    <div class="fu"><span>Follow-ups (FU1 · FU2):</span>
-      <span class="chip v-gather"><span class="cdot"></span>Not sent yet</span>
-      <span>scheduled in the sequence — reply data begins once they fire.</span></div>
-
-    <div class="note"><b>Read:</b> the Data-Center-Developer messages are landing (27–36% open) — <b>scale</b> them and
-      reuse the angle on nearby cells. The highest-volume message, GC / EPC procurement (54 sent, 11% open), is the clear
-      <b>revise</b> — it reaches the most people and converts the least. Clicks track opens ~1:1, so opens are becoming
-      engagement, not glances.</div>
-  `;
+    <div class="takeaway"><b>Next:</b> scale the Data-Center-Developer messages (27–36% open); revise GC/EPC procurement —
+      most volume (54), lowest open (11%). Clicks track opens ~1:1.</div>
+    <div class="foot">Rates = filtered (bot-screened) events ÷ delivered · ${t.opened_raw} raw opens incl. scanners.
+      Verdicts: Scale ≥25% · Working 12–25% · Revise &lt;12% · Gathering &lt;10 sent. Counts only. Synced daily from Apollo.</div>`;
 }
-
 function renderEmpty(brand){
-  return `<div class="card-table"><div class="empty">
-    <div class="big">${brand} isn't sending yet</div>
-    <div>${brand} runs on its own Apollo sequence. When it goes live (multi-brand, Phase B),
-      its numbers appear here — same view, no rebuild.</div>
-  </div></div>`;
+  document.getElementById("scope").innerHTML = "";
+  return `<div class="card-table"><div class="empty"><div class="big">${brand} isn't sending yet</div>
+    <div>Runs on its own Apollo sequence — appears here when it goes live (Phase B), same view.</div></div></div>`;
 }
-
 function select(brand){
-  document.querySelectorAll(".tab").forEach(t =>
-    t.setAttribute("aria-selected", String(t.dataset.brand === brand)));
-  const d = DATA[brand];
+  document.querySelectorAll(".tab").forEach(t=>t.setAttribute("aria-selected",String(t.dataset.brand===brand)));
+  const d=DATA[brand];
   document.getElementById("panel").innerHTML = d ? renderSGO(d) : renderEmpty(brand);
 }
-document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => select(t.dataset.brand)));
+document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>select(t.dataset.brand)));
 select("SGO");
 </script>
 </body>
