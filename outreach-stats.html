@@ -119,26 +119,11 @@
 </div>
 
 <script>
-// Baked snapshot (2026-07-27). Swap for a per-brand JSON fetch to go live.
-const DATA = {
-  SGO: {
-    scope: { contacts: 93, cells: 4 },
-    top: { delivered:79, opened:14, opened_raw:35, clicked:13, replied:0, bounced:9, spam:8, spam_rate:0.091 },
-    messages: [
-      { seg:"Data Center Developer · Procurement", key:"sgo-dcdev-proc-cold", v:"1.0", sent:11, delivered:11, opened:4, clicked:4 },
-      { seg:"Data Center Developer · Engineering", key:"sgo-dcdev-eng-cold",  v:"1.0", sent:11, delivered:11, opened:3, clicked:3 },
-      { seg:"GC / EPC · Procurement",              key:"sgo-gcepc-proc-cold", v:"1.0", sent:54, delivered:54, opened:6, clicked:5 },
-      { seg:"Data Center Developer · Development / Strategy", key:"sgo-dcdev-bizdev-cold", v:"1.0", sent:2, delivered:2, opened:1, clicked:1 }
-    ],
-    sequence: [
-      { name:"Cold email",  sent:79, opened:14, clicked:13, status:"sent" },
-      { name:"Follow-up 1", status:"paused" },
-      { name:"Follow-up 2", status:"paused" }
-    ],
-    outcomes: { replied:0, completed:0, in_progress:79 }
-  },
-  CEEG: null, Ankura: null
-};
+// Live feed — written each sync by outreach-stats-sync-v1 to the public bucket
+// (counts only). The page fetches it at load, so numbers refresh without a
+// rebuild (mirrors the Segment Matrix dashboard). init() at the bottom loads it.
+const FEED_URL = "https://ajynejzgqmgufrbircad.supabase.co/storage/v1/object/public/public-dashboards/outreach-stats/feed.json";
+let DATA = { SGO:null, CEEG:null, Ankura:null, generated_at:null };
 const MIN_N = 10;
 function verdict(opened, delivered){
   if (delivered < MIN_N) return { label:"Gathering", cls:"v-gather" };
@@ -173,10 +158,23 @@ function funnel(d){
     </div>`;
 }
 
+// Data-driven "next move" — best message to scale + weakest high-volume one to
+// revise, from the ready (>= MIN_N delivered) messages only. No baked numbers.
+function takeaway(d){
+  const ready = d.messages.filter(m=>m.delivered>=MIN_N).map(m=>({...m, r:m.opened/m.delivered}));
+  if(!ready.length) return `<b>Next:</b> still gathering — no message has ${MIN_N}+ delivered yet.`;
+  ready.sort((a,b)=>b.r-a.r);
+  const best=ready[0], worst=ready[ready.length-1], parts=[];
+  if(best.r>=0.25) parts.push(`scale <b>${best.seg}</b> (${pct(best.opened,best.delivered)}% open)`);
+  if(worst.r<0.12 && worst.key!==best.key) parts.push(`revise <b>${worst.seg}</b> — most volume among the laggards (${worst.sent} sent), lowest open (${pct(worst.opened,worst.delivered)}%)`);
+  if(!parts.length) parts.push(`hold — every message is in the working band; keep sending to build sample`);
+  return `<b>Next:</b> ${parts.join("; ")}.`;
+}
 function renderSGO(d){
   const t=d.top, oR=pct(t.opened,t.delivered), cR=pct(t.clicked,t.delivered);
+  const upd = DATA.generated_at ? new Date(DATA.generated_at).toISOString().slice(0,10) : "";
   document.getElementById("scope").innerHTML =
-    `<b>${d.scope.contacts}</b> contacts · <b>${d.scope.cells}</b> messages · updated 2026-07-27`;
+    `<b>${d.scope.contacts}</b> contacts · <b>${d.scope.cells}</b> messages${upd?` · updated ${upd}`:""}`;
   const rows = d.messages.map(m=>({...m, or:m.opened/m.delivered, ready:m.delivered>=MIN_N}));
   const ready = rows.filter(r=>r.ready).sort((a,b)=>b.or-a.or);
   const early = rows.filter(r=>!r.ready).sort((a,b)=>b.or-a.or);
@@ -207,8 +205,7 @@ function renderSGO(d){
         ${early.map(m=>row(m,true)).join("")}
       </tbody>
     </table></div></div>
-    <div class="takeaway"><b>Next:</b> scale the Data-Center-Developer messages (27–36% open); revise GC/EPC procurement —
-      most volume (54), lowest open (11%). Clicks track opens ~1:1.</div>
+    <div class="takeaway">${takeaway(d)}</div>
     <div class="foot">All rates are filtered (bot-screened) events ÷ delivered. Opens are undercounted by inbox privacy
       protection, so clicks &amp; replies are the more trustworthy signal. Verdicts (on open rate): Scale ≥25% · Working
       12–25% · Revise &lt;12% · Gathering &lt;10 sent. Counts only. Synced daily from Apollo.</div>`;
@@ -224,7 +221,21 @@ function select(brand){
   document.getElementById("panel").innerHTML = d ? renderSGO(d) : renderEmpty(brand);
 }
 document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>select(t.dataset.brand)));
-select("SGO");
+(async function init(){
+  document.getElementById("panel").innerHTML =
+    `<div class="card-table"><div class="empty"><div class="big">Loading…</div></div></div>`;
+  try {
+    const res = await fetch(FEED_URL, { cache:"no-store" });
+    if (!res.ok) throw new Error("HTTP "+res.status);
+    DATA = await res.json();
+  } catch (e) {
+    document.getElementById("panel").innerHTML =
+      `<div class="card-table"><div class="empty"><div class="big">Couldn't load stats</div>`
+      + `<div>The feed didn't respond — it refreshes each sync; try a reload.</div></div></div>`;
+    return;
+  }
+  select("SGO");
+})();
 </script>
 </body>
 </html>
