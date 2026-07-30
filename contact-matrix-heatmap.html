@@ -355,19 +355,20 @@ const ROLES = [
   "Operations",
   "BD / Sales",
 ];
-// shorter column headers (\n becomes a line break)
+// short, clean column headers (matches the "How the Contact Classifier Works" design)
 const ROLE_LABELS = {
-  "Executive": "Executive",
-  "Engineering / Technical": "Engineering /\nTechnical",
-  "Procurement / Sourcing": "Procurement /\nSourcing",
-  "Project / Program Management": "Project /\nProgram Mgmt",
-  "Finance / Capital": "Finance /\nCapital",
-  "Operations": "Operations",
-  "BD / Sales": "BD / Sales",
+  "Executive": "Exec",
+  "Engineering / Technical": "Eng",
+  "Procurement / Sourcing": "Proc",
+  "Project / Program Management": "PM",
+  "Finance / Capital": "Fin",
+  "Operations": "Ops",
+  "BD / Sales": "BD",
 };
 const COMPANIES = [
   { tier: "T1", name: "Data Center Developer" },
   { tier: "T1", name: "Hyperscaler / Neocloud" },
+  { tier: "T1", name: "Data Center Operator / Colo" },
   { tier: "T1", name: "Procurement Company" },
   { tier: "T1", name: "EPC" },
   { tier: "T2", name: "Utility" },
@@ -375,7 +376,6 @@ const COMPANIES = [
   { tier: "T2", name: "GC" },
   { tier: "T2", name: "Electrical Contractor" },
   { tier: "T2", name: "Design and Engineering" },
-  { tier: "T2", name: "Data Center Operator / Colo" },
   { tier: "T2", name: "Powered Land Developer" },
   { tier: "T2", name: "Land & Site Broker" },
   { tier: "T3", name: "Capital Partner" },
