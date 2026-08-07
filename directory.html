@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<!--
+  VOLTA Contact Browser — read-only Notion /embed target.
+
+  WHAT THIS IS
+  A dumb client over the directory browse API. Every filter, sort and page is
+  computed server-side; this page sends params and renders what it gets back.
+  It never holds the full dataset (18k+ contacts) in memory, and it never
+  filters or sorts an array locally. That is the entire point of the design.
+
+  ZERO DATA, ZERO SECRETS
+  This file is auto-mirrored to a PUBLIC GitHub Pages repo. It must never
+  contain a contact, a count, a token, or a key. The access token arrives at
+  runtime in the page's own URL (?k=…, carried by the Notion embed URL) and is
+  forwarded to the API; it is never persisted, logged, or written into the DOM.
+
+  SELF-CONTAINED
+  Inline CSS + JS, zero external requests of any kind — no CDN, no webfont
+  host, no analytics, no remote images (contact photo_url is deliberately NOT
+  rendered; see the drawer renderer). Notion's iframe sandbox is unforgiving.
+
+  IMPORTANT: this file intentionally has NO Jekyll front matter. Jekyll copies
+  front-matter-less files verbatim, so the `${…}` template literals in the JS
+  below are not run through Liquid. Do not add a `---` block to the top.
+
+  Embed URL shape:
+      …/directory.html?k=<token>
+      …/directory.html?k=<token>&theme=dark&collection=<id>&q=<seed>
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>VOLTA Contact Browser</title>
+<style>
+  /* ===================================================================
+     TOKENS — docs/ARTIFACT_DESIGN_SYSTEM.md, pasted verbatim.
+     Three theme blocks, not four: :root carries light, the media query
+     applies dark on the OS signal (the :not() lets a forced light win),
+     and [data-theme="dark"] applies dark when the viewer forces it.
+     Notion does NOT pass its theme into the iframe, so the manual toggle
+     is the primary signal here and the OS query is only a first guess.
+     =================================================================== */
+  :root{
+    /* type: not themed, declared once. NO Sora — the embed has no font host,
+       so a bare font-family:"Sora" silently falls back. System stacks only. */
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+
+    /* surfaces */
+    --paper:#eef2f7; --surface:#ffffff; --surface-2:#f7f9fc;
+    /* text */
+    --ink:#14202e; --muted:#5b6b7b; --faint:#66768a;
+    /* rules */
+    --line:#d6dee8; --line-strong:#c2ccd9;
+    /* accent: SGO amber, darkened for text contrast */
+    --accent:#a5620d; --accent-soft:#f3e7d5; --accent-line:#e6cba3;
+    /* brand amber: fills and strokes only, NEVER text (2.1:1 on white) */
+    --amber:#FF9D02;
+    /* categorical */
+    --blue:#2f6db0;   --blue-soft:#e4edf7;   --blue-line:#bcd3ec;
+    --grid:#186f6a;   --grid-soft:#dcecea;   --grid-line:#b6d5d2;
+    --violet:#574a86; --violet-soft:#e7e2f1; --violet-line:#cdc4e4;
+    --alert:#b04a43;  --alert-soft:#f6e3e1;  --alert-line:#e8c4c0;
+
+    --shadow:0 1px 2px rgba(20,32,46,.05), 0 8px 28px rgba(20,32,46,.07);
+    /* local additions */
+    --row-hover:#eef3f9;
+    --scrim:rgba(20,32,46,.34);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#0b131d; --surface:#111c28; --surface-2:#0e1822;
+      --ink:#e7eef6; --muted:#9aa9ba; --faint:#77879a;
+      --line:#243545; --line-strong:#2f4356;
+      --accent:#e0a244; --accent-soft:#2a2011; --accent-line:#4a3717;
+      --blue:#6aa6e2;   --blue-soft:#0f1d2c;   --blue-line:#274157;
+      --grid:#4bb3ac;   --grid-soft:#10231f;   --grid-line:#1e4b46;
+      --violet:#a596da; --violet-soft:#1d1930; --violet-line:#332c52;
+      --alert:#e0736b;  --alert-soft:#2a1614;  --alert-line:#4d2723;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+      --row-hover:#16232f;
+      --scrim:rgba(0,0,0,.55);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0b131d; --surface:#111c28; --surface-2:#0e1822;
+    --ink:#e7eef6; --muted:#9aa9ba; --faint:#77879a;
+    --line:#243545; --line-strong:#2f4356;
+    --accent:#e0a244; --accent-soft:#2a2011; --accent-line:#4a3717;
+    --blue:#6aa6e2;   --blue-soft:#0f1d2c;   --blue-line:#274157;
+    --grid:#4bb3ac;   --grid-soft:#10231f;   --grid-line:#1e4b46;
+    --violet:#a596da; --violet-soft:#1d1930; --violet-line:#332c52;
+    --alert:#e0736b;  --alert-soft:#2a1614;  --alert-line:#4d2723;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    --row-hover:#16232f;
+    --scrim:rgba(0,0,0,.55);
+  }
+
+  *{ box-sizing:border-box; }
+
+  /* -------------------------------------------------------------------
+     SHELL — a Notion embed has NO auto-height protocol (the user drags the
+     iframe to size). So: fill the viewport exactly, put the only scroller
+     on .scroll, and never let <body> scroll (in either axis).
+     .scroll needs min-height:0 — without it a flex child refuses to shrink
+     below its content and you get a second, outer scrollbar.
+     ------------------------------------------------------------------- */
+  html,body{ height:100%; margin:0; padding:0; overflow:hidden; }
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:13.5px; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{ height:100dvh; display:flex; flex-direction:column; }
+
+  /* -------------------------------------------------------------------
+     HEADER CHROME — budget is ~180px. Three compact rows.
+     ------------------------------------------------------------------- */
+  .chrome{ flex:0 0 auto; padding:10px 12px 8px; border-bottom:1px solid var(--line);
+    background:var(--surface); display:flex; flex-direction:column; gap:8px; }
+
+  .row1{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .title{ font-size:15px; font-weight:680; letter-spacing:-.015em; margin:0; white-space:nowrap; }
+  .head-r{ margin-left:auto; display:flex; align-items:center; gap:10px; }
+
+  /* stat strip */
+  .strip{ display:flex; flex-wrap:wrap; gap:0; border:1px solid var(--line);
+    border-radius:9px; background:var(--surface-2); overflow:hidden; }
+  .stat{ padding:4px 12px; border-left:1px solid var(--line); }
+  .stat:first-child{ border-left:0; }
+  .stat .k{ font-family:var(--mono); font-size:9.5px; font-weight:700; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--faint); }
+  .stat .v{ font-family:var(--mono); font-size:14px; font-weight:700; letter-spacing:.01em;
+    font-variant-numeric:tabular-nums; margin-top:1px; line-height:1.15; }
+  /* resolved-coverage tile: amber is the FILL of the left rule, never the text */
+  .stat.resolved{ border-left:3px solid var(--amber); }
+  .stat.resolved .v{ color:var(--accent); }
+  .stat .v .r{ font-size:11px; font-weight:600; color:var(--muted); margin-left:5px; }
+
+  /* live indicator (data is live, not a snapshot — no "last updated" stamp) */
+  .live{ display:inline-flex; align-items:center; gap:6px; font-family:var(--mono);
+    font-size:10.5px; letter-spacing:.04em; color:var(--muted); white-space:nowrap; }
+  .live .dot{ width:7px; height:7px; border-radius:50%; background:var(--grid); flex:0 0 auto; }
+  .live.is-error .dot{ background:var(--alert); }
+  .live.is-busy .dot{ background:var(--amber); }
+
+  .iconbtn{ appearance:none; cursor:pointer; font:inherit; font-family:var(--mono); font-size:12px;
+    line-height:1; border:1px solid var(--line); background:var(--surface-2); color:var(--ink);
+    padding:5px 8px; border-radius:7px; }
+  .iconbtn:hover{ border-color:var(--line-strong); }
+
+  /* filters */
+  .row2{ display:flex; align-items:flex-end; gap:8px; flex-wrap:wrap; }
+  .fld{ display:flex; flex-direction:column; gap:3px; }
+  .flbl{ font-family:var(--mono); font-size:9.5px; font-weight:700; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--faint); }
+  .fld select,.fld input{ appearance:none; font:inherit; font-size:12.5px; color:var(--ink);
+    background:var(--surface-2); border:1px solid var(--line); border-radius:7px;
+    padding:5px 8px; max-width:220px; }
+  .fld select{ padding-right:22px; cursor:pointer; }
+  .fld input[type="search"]{ min-width:210px; }
+  .facets{ display:contents; }
+  .txtbtn{ appearance:none; cursor:pointer; font:inherit; font-family:var(--mono); font-size:10.5px;
+    font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+    background:transparent; border:1px solid var(--line); border-radius:7px; padding:6px 10px; }
+  .txtbtn:hover{ color:var(--ink); border-color:var(--line-strong); }
+
+  /* counter + disclaimer + warnings */
+  .row3{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-height:16px; }
+  .count{ font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.05em;
+    color:var(--ink); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .note{ font-size:11px; color:var(--faint); line-height:1.35; }
+  .warn{ font-size:11px; color:var(--accent); background:var(--accent-soft);
+    border:1px solid var(--accent-line); border-radius:6px; padding:2px 8px; line-height:1.35; }
+
+  /* focus rings — visible everywhere, amber is fine as a STROKE */
+  :where(button,select,input,a,[tabindex]):focus-visible{
+    outline:2px solid var(--amber); outline-offset:2px; border-radius:6px;
+  }
+
+  /* -------------------------------------------------------------------
+     TABLE — the only scroller in the page. Horizontal overflow lives here
+     and here only; <body> never scrolls sideways.
+     ------------------------------------------------------------------- */
+  .scroll{ flex:1; min-height:0; overflow:auto; background:var(--paper); position:relative; }
+  table{ border-collapse:separate; border-spacing:0; width:100%; font-size:12.5px; background:var(--surface); }
+
+  thead th{
+    position:sticky; top:0; z-index:3;
+    background:var(--surface-2); color:var(--faint);
+    font-family:var(--mono); font-size:9.5px; font-weight:700; letter-spacing:.11em;
+    text-transform:uppercase; text-align:left; white-space:nowrap;
+    padding:7px 10px; border-bottom:1px solid var(--line-strong);
+  }
+  thead th.sortable{ cursor:pointer; }
+  thead th.sortable:hover{ color:var(--ink); }
+  th .arrow{ opacity:0; margin-left:5px; }
+  th[aria-sort="ascending"] .arrow,
+  th[aria-sort="descending"] .arrow{ opacity:1; color:var(--accent); }
+  th[aria-sort="ascending"] , th[aria-sort="descending"]{ color:var(--ink); }
+  th .sortbtn{ appearance:none; background:none; border:0; padding:0; margin:0; font:inherit;
+    color:inherit; cursor:pointer; letter-spacing:inherit; text-transform:inherit; }
+
+  tbody td{ padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:middle;
+    white-space:nowrap; max-width:280px; overflow:hidden; text-overflow:ellipsis; }
+  tbody tr{ cursor:pointer; }
+  tbody tr:hover td{ background:var(--row-hover); }
+  tbody tr:hover .c-name{ background:var(--row-hover); }
+
+  /* sticky first column — z-index has to sit UNDER the sticky header, and the
+     header's own first cell has to sit above both. 2 / 3 / 4. */
+  .c-name{ position:sticky; left:0; z-index:2; background:var(--surface);
+    min-width:170px; font-weight:620; }
+  thead .c-name{ z-index:4; background:var(--surface-2); }
+
+  .namebtn{ appearance:none; background:none; border:0; padding:0; margin:0; font:inherit;
+    font-weight:inherit; color:var(--ink); text-align:left; cursor:pointer; }
+  .namebtn:hover{ color:var(--accent); }
+
+  .sub{ font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+  td.mono{ font-family:var(--mono); font-size:11.5px; color:var(--muted);
+    font-variant-numeric:tabular-nums; letter-spacing:.02em; }
+
+  /* chips */
+  .chip{ display:inline-flex; align-items:center; gap:5px; font-family:var(--mono);
+    font-size:10px; font-weight:700; letter-spacing:.04em; padding:2px 8px;
+    border-radius:999px; white-space:nowrap; border:1px solid transparent; }
+  .chip .cdot{ width:6px; height:6px; border-radius:50%; flex:0 0 auto; }
+  .chip.ok{ color:var(--grid); background:var(--grid-soft); border-color:var(--grid-line); }
+  .chip.ok .cdot{ background:var(--grid); }
+  .chip.neutral{ color:var(--muted); background:var(--surface-2); border-color:var(--line); }
+  .chip.info{ color:var(--blue); background:var(--blue-soft); border-color:var(--blue-line); }
+  .chip.warnc{ color:var(--alert); background:var(--alert-soft); border-color:var(--alert-line); }
+  .li{ font-family:var(--mono); font-size:10.5px; font-weight:700; color:var(--blue); text-decoration:none; }
+  .li:hover{ text-decoration:underline; }
+
+  /* -------------------------------------------------------------------
+     STATES — loading / error / empty. An error NEVER wipes a good render:
+     if rows are on screen the error shows as a bar above them with Retry.
+     ------------------------------------------------------------------- */
+  .state{ padding:44px 16px; text-align:center; color:var(--muted); font-size:13px; background:var(--paper); }
+  .state .big{ font-size:14.5px; font-weight:640; color:var(--ink); margin-bottom:4px; }
+  .state.err .big{ color:var(--alert); }
+  .spinner{ width:20px; height:20px; margin:0 auto 12px; border:3px solid var(--line);
+    border-top-color:var(--amber); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  /* the retry bar sits OUTSIDE .scroll so it stays put while the last good
+     render is scrolled — an error the user scrolls away from is not an error
+     they will act on */
+  .errbar{ flex:0 0 auto; display:flex; align-items:center; gap:10px; justify-content:center;
+    flex-wrap:wrap; padding:7px 12px; font-size:12px; color:var(--alert);
+    background:var(--alert-soft); border-bottom:1px solid var(--alert-line); }
+  .sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+  .footbar{ display:flex; justify-content:center; padding:12px; background:var(--paper); }
+  .sentinel{ height:1px; }
+  .hidden{ display:none !important; }
+
+  /* -------------------------------------------------------------------
+     DETAIL DRAWER — read-only. Escape / backdrop / button all close it.
+     ------------------------------------------------------------------- */
+  .scrim{ position:fixed; inset:0; background:var(--scrim); z-index:20; }
+  .drawer{ position:fixed; top:0; right:0; bottom:0; width:min(440px,92vw); z-index:21;
+    background:var(--surface); border-left:1px solid var(--line); box-shadow:var(--shadow);
+    display:flex; flex-direction:column; }
+  .dr-head{ flex:0 0 auto; display:flex; align-items:flex-start; gap:10px;
+    padding:14px 14px 10px; border-bottom:1px solid var(--line); }
+  .dr-title{ margin:0; font-size:15.5px; font-weight:680; letter-spacing:-.015em; }
+  .dr-sub{ font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:3px; line-height:1.45; }
+  .dr-body{ flex:1; min-height:0; overflow:auto; padding:12px 14px 24px; }
+  .kv{ display:grid; grid-template-columns:96px 1fr; gap:5px 10px; margin:0 0 14px; }
+  .kv dt{ font-family:var(--mono); font-size:9.5px; font-weight:700; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--faint); padding-top:2px; }
+  .kv dd{ margin:0; font-size:12.5px; overflow-wrap:anywhere; }
+  .kv dd a{ color:var(--blue); }
+  .sect{ font-family:var(--mono); font-size:9.5px; font-weight:700; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--faint); margin:16px 0 6px;
+    padding-top:10px; border-top:1px solid var(--line); }
+  .prose{ font-size:12.5px; color:var(--muted); line-height:1.55; }
+  .intel-cat{ font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--accent); margin:12px 0 5px; }
+  .intel-item{ border-left:3px solid var(--accent-line); padding:2px 0 2px 9px; margin-bottom:7px; }
+  .intel-item .claim{ font-size:12.5px; line-height:1.5; }
+  .intel-item .when{ font-family:var(--mono); font-size:9.5px; color:var(--faint); letter-spacing:.05em; margin-top:2px; }
+
+  /* -------------------------------------------------------------------
+     RESPONSIVE — desktop is the target. Under 640px keep name + company +
+     contacted and let the rest scroll horizontally inside .scroll.
+     ------------------------------------------------------------------- */
+  @media (max-width:640px){
+    .title{ font-size:13.5px; }
+    .fld input[type="search"]{ min-width:150px; }
+    .fld select,.fld input{ max-width:160px; }
+    .col-title,.col-role,.col-segment,.col-seniority,.col-location,.col-email,.col-li{ display:none; }
+    .c-name{ min-width:132px; }
+  }
+  @media (prefers-reduced-motion:reduce){ .spinner{ animation-duration:2.4s; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="chrome">
+    <div class="row1">
+      <h1 class="title" id="title">Contact Browser</h1>
+      <div class="strip" id="strip"></div>
+      <div class="head-r">
+        <span class="live" id="live"><span class="dot"></span><span id="liveTxt">Loading…</span></span>
+        <button class="iconbtn" id="themeBtn" type="button" aria-pressed="false" aria-label="Switch to dark theme" title="Toggle theme">☾</button>
+      </div>
+    </div>
+
+    <div class="row2">
+      <label class="fld"><span class="flbl">Collection</span>
+        <select id="collSel" aria-label="Collection"></select></label>
+      <label class="fld"><span class="flbl">Search</span>
+        <input id="q" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Name, company, title (3+ chars)" aria-label="Search contacts" /></label>
+      <!-- facet dropdowns are injected here, entirely from /facets -->
+      <span class="facets" id="facets"></span>
+      <label class="fld"><span class="flbl">Contacted</span>
+        <select id="emailedSel" aria-label="Contacted filter">
+          <option value="">All</option>
+          <option value="true">Contacted</option>
+          <option value="false">Not contacted</option>
+        </select></label>
+      <button class="txtbtn" id="clearBtn" type="button">Clear</button>
+    </div>
+
+    <div class="row3">
+      <span class="count" id="count" role="status" aria-live="polite"></span>
+      <span class="note">Contacted reflects automated waves only. Manual/personal-inbox sends aren't reflected yet.</span>
+      <span class="warn hidden" id="warnbar"></span>
+    </div>
+  </header>
+
+  <div class="errbar hidden" id="errbar">
+    <span id="errbarTxt"></span>
+    <button class="txtbtn" id="errbarRetry" type="button">Retry</button>
+  </div>
+
+  <div class="scroll" id="scroll">
+    <table id="table" class="hidden">
+      <caption class="sr-only">Directory contacts</caption>
+      <thead>
+        <tr>
+          <th class="c-name sortable" data-sort="name" aria-sort="ascending" scope="col">
+            <button class="sortbtn" type="button">Name<span class="arrow" aria-hidden="true">▲</span></button></th>
+          <th class="col-title sortable" data-sort="title" aria-sort="none" scope="col">
+            <button class="sortbtn" type="button">Title<span class="arrow" aria-hidden="true">▲</span></button></th>
+          <th class="col-company sortable" data-sort="company" aria-sort="none" scope="col">
+            <button class="sortbtn" type="button">Company<span class="arrow" aria-hidden="true">▲</span></button></th>
+          <th class="col-role" scope="col">Role</th>
+          <th class="col-segment" scope="col">Segment</th>
+          <th class="col-seniority" scope="col">Seniority</th>
+          <th class="col-location" scope="col">Location</th>
+          <th class="col-email" scope="col">Email</th>
+          <th class="col-contacted" scope="col">Contacted</th>
+          <th class="col-li" scope="col">LI</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+
+    <div class="footbar hidden" id="footbar">
+      <button class="txtbtn" id="moreBtn" type="button">Load more</button>
+    </div>
+    <div class="sentinel" id="sentinel"></div>
+
+    <div class="state" id="loading"><div class="spinner"></div>Loading contacts…</div>
+    <div class="state err hidden" id="errstate">
+      <div class="big">Couldn't load contacts</div>
+      <div id="errstateTxt"></div>
+      <div style="margin-top:12px"><button class="txtbtn" id="errRetry" type="button">Retry</button></div>
+    </div>
+    <div class="state hidden" id="empty">
+      <div class="big">No contacts match these filters</div>
+      <div>Widen the search or clear a filter.</div>
+    </div>
+  </div>
+</div>
+
+<!-- detail drawer (read-only) -->
+<div class="scrim hidden" id="scrim"></div>
+<aside class="drawer hidden" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drTitle" aria-hidden="true">
+  <div class="dr-head">
+    <div style="min-width:0">
+      <h2 class="dr-title" id="drTitle">Contact</h2>
+      <div class="dr-sub" id="drSub"></div>
+    </div>
+    <button class="iconbtn" id="drClose" type="button" style="margin-left:auto" aria-label="Close details">✕</button>
+  </div>
+  <div class="dr-body" id="drBody"></div>
+</aside>
+
+<script>
+/* =========================================================================
+   1. CONFIG — everything you would normally tweak lives here.
+   ========================================================================= */
+const CONFIG = {
+  TITLE: "Contact Browser",
+
+  // Base URL of the directory browse API (Supabase Edge Function). No trailing
+  // slash. The token is NEVER part of this constant — it arrives at runtime in
+  // the page URL as ?k= and is appended per request.
+  // Function name taken from supabase/functions/volta-directory-v1/ (the API is
+  // being built in parallel) — re-check this string before the first embed.
+  API_BASE: "https://ajynejzgqmgufrbircad.supabase.co/functions/v1/volta-directory-v1",
+
+  PAGE_SIZE: 50,            // rows per request (server may cap lower)
+  SEARCH_MIN: 3,            // server requires >= 3 chars; don't fire below it
+  SEARCH_DEBOUNCE_MS: 250,
+  DEFAULT_COLLECTION: "__directory__",
+  DEFAULT_SORT: "name",
+  DEFAULT_DIR: "asc",
+  // Sorting by the "Contacted" badge is NOT supported by the API — not offered.
+  SORTABLE: ["name", "company", "title"],
+  // Facet keys the page owns with a dedicated control; a facet with this key is
+  // skipped when rendering the generic dropdowns so it can't render twice.
+  FACET_SKIP: ["emailed"],
+  // Allowlist of query params this page reads off its OWN url. Anything else is
+  // ignored — no arbitrary API host, no arbitrary fetch target.
+  PARAM_ALLOW: ["k", "theme", "collection", "q"],
+  THEME_KEY: "volta.directory.theme",
+};
+
+/* =========================================================================
+   2. STATE
+   ========================================================================= */
+const $ = id => document.getElementById(id);
+const PARAMS = new URLSearchParams(location.search);
+const param = name => (CONFIG.PARAM_ALLOW.includes(name) ? (PARAMS.get(name) || "") : "");
+
+// Access token from our own URL. Kept in a module-scope const: forwarded to the
+// API, never rendered, never stored, never logged.
+const TOKEN = param("k");
+
+const state = {
+  collections: [],
+  collectionId: "",
+  facets: [],              // [{key,label,values:[{value,count}]}]
+  filters: {},             // facetKey -> selected value (server param name = key)
+  q: "",
+  emailed: "",             // "" | "true" | "false"
+  sort: CONFIG.DEFAULT_SORT,
+  dir: CONFIG.DEFAULT_DIR,
+  cursor: null,
+  items: [],
+  count: null,             // {value, capped}
+  loading: false,
+  lastOkAt: null,          // time of the most recent successful list fetch
+  listSeq: 0,              // stale-response guard (see fetchList)
+  facetSeq: 0,
+  detailSeq: 0,
+  listAbort: null,
+};
+
+/* =========================================================================
+   3. SMALL HELPERS
+   ========================================================================= */
+
+// Escape EVERY server-provided string before it touches innerHTML. No exceptions.
+function esc(v) {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+const dash = v => (v === null || v === undefined || v === "" ? '<span class="sub">—</span>' : esc(v));
+const num = n => (typeof n === "number" ? n.toLocaleString() : "—");
+
+// Only http(s) links are ever emitted as href (blocks javascript:/data: values).
+function safeUrl(u) {
+  if (!u) return null;
+  try {
+    const parsed = new URL(String(u), location.href);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") ? parsed.href : null;
+  } catch { return null; }
+}
+
+// localStorage is a nice-to-have, never a dependency: this page is third-party
+// inside notion.so and Safari ITP throws SecurityError on access. Always guarded.
+function lsGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } }
+
+function fmtAgo(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 45) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  return `${Math.floor(h / 24)} day${Math.floor(h / 24) === 1 ? "" : "s"} ago`;
+}
+function fmtDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? String(iso) : d.toISOString().slice(0, 10);
+}
+
+/* =========================================================================
+   4. FETCH LAYER — one place that knows about the envelope and the token.
+   ========================================================================= */
+
+function apiUrl(path, params) {
+  const url = new URL(CONFIG.API_BASE.replace(/\/+$/, "") + path);
+  if (TOKEN) url.searchParams.set("k", TOKEN);
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v !== null && v !== undefined && v !== "") url.searchParams.set(k, String(v));
+  }
+  return url.toString();
+}
+
+// Returns the parsed envelope on success; throws an Error carrying .code on
+// {status:"error"} or transport failure. Never leaks the token into a message.
+async function apiGet(path, params, signal) {
+  const res = await fetch(apiUrl(path, params), { cache: "no-store", signal });
+  let body = null;
+  try { body = await res.json(); } catch { /* non-JSON body */ }
+
+  if (body && body.status === "error") {
+    const err = new Error((body.error && body.error.message) || "The request failed.");
+    err.code = body.error && body.error.code;
+    throw err;
+  }
+  if (!res.ok) {
+    const err = new Error(
+      res.status === 401 || res.status === 403
+        ? "Access denied — this embed link may be missing or have an expired key."
+        : `The API returned HTTP ${res.status}.`
+    );
+    err.code = "HTTP_" + res.status;
+    throw err;
+  }
+  if (!body || typeof body !== "object") throw new Error("The API returned a malformed response.");
+  return body;
+}
+
+// Warnings are surfaced non-intrusively: one line in the header. Kept per
+// source ("collections" / "list" / "facets") so a list refresh with no warnings
+// doesn't silently erase a standing warning from the collections call — and so
+// a warning that clears on the server clears here on that source's next success.
+const warnBySource = new Map();
+function showWarnings(source, warnings) {
+  const list = (Array.isArray(warnings) ? warnings : []).filter(Boolean)
+    .map(w => (w && (w.message || w.code)) || String(w));
+  if (list.length) warnBySource.set(source, list); else warnBySource.delete(source);
+
+  const all = [...new Set([].concat(...warnBySource.values()))];
+  const bar = $("warnbar");
+  bar.textContent = all.join(" · ");
+  bar.classList.toggle("hidden", all.length === 0);
+}
+
+/* =========================================================================
+   5. RENDER — chrome
+   ========================================================================= */
+
+function setLive(kind, msg) {
+  const el = $("live");
+  el.classList.toggle("is-error", kind === "error");
+  el.classList.toggle("is-busy", kind === "busy");
+  $("liveTxt").textContent = msg;
+}
+function tickLive() {
+  if (state.loading || !state.lastOkAt) return;
+  if ($("live").classList.contains("is-error")) return;
+  setLive("live", `live · updated ${fmtAgo(state.lastOkAt)}`);
+}
+
+function renderCollections() {
+  const sel = $("collSel");
+  sel.innerHTML = state.collections
+    .map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  sel.value = state.collectionId;
+}
+
+// The header strip. The resolved-coverage tile only appears when the collection
+// reports both totals AND they differ — ~35% of uploaded event attendees never
+// resolve to a contact, and hiding that makes the tool look like it is lying.
+function renderStrip() {
+  const c = state.collections.find(x => x.id === state.collectionId);
+  const tiles = [];
+  if (c) {
+    tiles.push(`<div class="stat"><div class="k">Contacts</div><div class="v">${esc(num(c.contact_count))}</div></div>`);
+    const tot = c.total_rows, res = c.resolved_rows;
+    if (typeof tot === "number" && typeof res === "number" && tot !== res) {
+      const pct = tot > 0 ? Math.round(res / tot * 100) : 0;
+      tiles.push(
+        `<div class="stat resolved"><div class="k">Resolved</div>` +
+        `<div class="v">${esc(num(res))} of ${esc(num(tot))}<span class="r">${pct}%</span></div></div>`
+      );
+    }
+  }
+  $("strip").innerHTML = tiles.join("");
+}
+
+// Filters are rendered ENTIRELY from /facets. Nothing about roles, segments or
+// seniorities is hardcoded in this file — a facet the API stops returning simply
+// stops rendering, and a new AI-classification facet lights up with no edit here.
+function renderFacets() {
+  const box = $("facets");
+  box.innerHTML = state.facets
+    .filter(f => f && f.key && !CONFIG.FACET_SKIP.includes(f.key))
+    .map(f => {
+      const opts = (f.values || []).map(v =>
+        `<option value="${esc(v.value)}">${esc(v.value)}${typeof v.count === "number" ? ` (${esc(num(v.count))})` : ""}</option>`
+      ).join("");
+      const label = esc(f.label || f.key);
+      return `<label class="fld"><span class="flbl">${label}</span>` +
+        `<select data-facet="${esc(f.key)}" aria-label="${label} filter">` +
+        `<option value="">All</option>${opts}</select></label>`;
+    }).join("");
+
+  // restore any still-valid selections after a re-render
+  box.querySelectorAll("select[data-facet]").forEach(sel => {
+    const cur = state.filters[sel.dataset.facet];
+    if (cur) sel.value = cur;
+    if (sel.value !== (cur || "")) delete state.filters[sel.dataset.facet];
+    sel.addEventListener("change", () => {
+      const key = sel.dataset.facet;
+      if (sel.value) state.filters[key] = sel.value; else delete state.filters[key];
+      resetAndLoad();       // any filter change resets the cursor
+    });
+  });
+}
+
+function renderCount() {
+  const el = $("count");
+  if (!state.count) { el.textContent = ""; return; }
+  const total = state.count.capped ? `${num(state.count.value)}+` : num(state.count.value);
+  el.textContent = `Showing ${num(state.items.length)} of ${total}`;
+}
+
+function renderSortHeaders() {
+  document.querySelectorAll("thead th.sortable").forEach(th => {
+    const key = th.dataset.sort;
+    const active = key === state.sort;
+    th.setAttribute("aria-sort", active ? (state.dir === "asc" ? "ascending" : "descending") : "none");
+    const arrow = th.querySelector(".arrow");
+    if (arrow) arrow.textContent = active && state.dir === "desc" ? "▼" : "▲";
+  });
+}
+
+/* =========================================================================
+   6. RENDER — rows
+   ========================================================================= */
+
+function emailChip(status) {
+  if (!status) return '<span class="sub">—</span>';
+  const s = String(status).toLowerCase();
+  const cls = s.includes("verified") ? "ok"
+    : (s.includes("guess") || s.includes("likely") || s.includes("catch")) ? "info"
+    : (s.includes("unavailable") || s.includes("invalid") || s.includes("bounce")) ? "warnc"
+    : "neutral";
+  return `<span class="chip ${cls}">${esc(status)}</span>`;
+}
+
+function rowHtml(it) {
+  const li = safeUrl(it.linkedin);
+  return `<tr data-id="${esc(it.id)}">` +
+    `<td class="c-name"><button class="namebtn" type="button">${dash(it.name)}</button></td>` +
+    `<td class="col-title">${dash(it.title)}</td>` +
+    `<td class="col-company">${dash(it.company)}</td>` +
+    `<td class="col-role mono">${dash(it.role)}</td>` +
+    `<td class="col-segment mono">${dash(it.segment)}</td>` +
+    `<td class="col-seniority mono">${dash(it.seniority)}</td>` +
+    `<td class="col-location mono">${dash(it.location)}</td>` +
+    `<td class="col-email">${emailChip(it.email_status)}</td>` +
+    `<td class="col-contacted">${it.emailed
+      ? '<span class="chip ok"><span class="cdot"></span>Contacted</span>'
+      : '<span class="sub">—</span>'}</td>` +
+    `<td class="col-li">${li ? `<a class="li" href="${esc(li)}" target="_blank" rel="noopener noreferrer nofollow">in ↗</a>` : '<span class="sub">—</span>'}</td>` +
+    `</tr>`;
+}
+
+function renderRows(append) {
+  const tbody = $("tbody");
+  if (append) {
+    // append only the new tail so existing DOM (and scroll position) survives
+    tbody.insertAdjacentHTML("beforeend", state.items.slice(tbody.rows.length).map(rowHtml).join(""));
+  } else {
+    tbody.innerHTML = state.items.map(rowHtml).join("");
+  }
+  const has = state.items.length > 0;
+  $("table").classList.toggle("hidden", !has);
+  $("empty").classList.toggle("hidden", has || state.loading);
+  $("footbar").classList.toggle("hidden", !state.cursor);
+  renderCount();
+}
+
+function showState(which) {
+  $("loading").classList.toggle("hidden", which !== "loading");
+  $("errstate").classList.toggle("hidden", which !== "error");
+}
+
+/* =========================================================================
+   7. LOADING — collections, facets, list
+   =========================================================================
+   STALE-RESPONSE GUARD: every list request takes a sequence number off
+   state.listSeq. A response whose seq is no longer the current one is dropped
+   on the floor. Without this, a slow "role=Engineering" response can land after
+   a fast "role=Finance" one and paint the wrong rows — the single most likely
+   real bug in a filter-as-you-type table. The in-flight request is also
+   aborted, but abort alone is not sufficient (a response can already be in
+   the microtask queue when abort fires).
+   ========================================================================= */
+
+async function loadCollections() {
+  const body = await apiGet("/collections");
+  state.collections = Array.isArray(body.collections) ? body.collections : [];
+  showWarnings("collections", body.warnings);
+  const requested = param("collection");
+  const valid = id => state.collections.some(c => c.id === id);
+  state.collectionId =
+    (requested && valid(requested)) ? requested
+      : valid(CONFIG.DEFAULT_COLLECTION) ? CONFIG.DEFAULT_COLLECTION
+        : (state.collections[0] && state.collections[0].id) || "";
+  renderCollections();
+  renderStrip();
+}
+
+async function loadFacets() {
+  const seq = ++state.facetSeq;
+  const id = state.collectionId;
+  try {
+    const body = await apiGet(`/collections/${encodeURIComponent(id)}/facets`);
+    if (seq !== state.facetSeq) return;                 // superseded
+    state.facets = Array.isArray(body.facets) ? body.facets : [];
+    renderFacets();
+  } catch {
+    if (seq !== state.facetSeq) return;
+    // Facets are chrome, not content: a facet failure must not block the list.
+    state.facets = [];
+    renderFacets();
+  }
+}
+
+function listParams() {
+  const p = {
+    q: state.q.length >= CONFIG.SEARCH_MIN ? state.q : "",
+    emailed: state.emailed,
+    sort: state.sort,
+    dir: state.dir,
+    limit: CONFIG.PAGE_SIZE,
+    cursor: state.cursor || "",
+  };
+  // facet params are passed through under the facet's own key — that is what
+  // makes new server-side facets work with no change to this file
+  for (const [k, v] of Object.entries(state.filters)) if (v) p[k] = v;
+  return p;
+}
+
+async function loadList(append) {
+  const seq = ++state.listSeq;
+  const id = state.collectionId;
+  if (!id) return;
+
+  if (state.listAbort) state.listAbort.abort();
+  const ctrl = ("AbortController" in window) ? new AbortController() : null;
+  state.listAbort = ctrl;
+
+  state.loading = true;
+  setLive("busy", "loading…");
+  if (!append && !state.items.length) showState("loading");
+  $("errbar").classList.add("hidden");
+
+  try {
+    const body = await apiGet(
+      `/collections/${encodeURIComponent(id)}/contacts`,
+      listParams(),
+      ctrl && ctrl.signal
+    );
+    if (seq !== state.listSeq) return;                  // a newer request won
+
+    const items = Array.isArray(body.items) ? body.items : [];
+    state.items = append ? state.items.concat(items) : items;
+    state.cursor = (body.page && body.page.next_cursor) || null;
+    state.count = body.count || { value: state.items.length, capped: false };
+    state.lastOkAt = Date.now();
+    state.loading = false;
+
+    showWarnings("list", body.warnings);
+    showState(null);
+    renderRows(append);
+    setLive("live", `live · updated ${fmtAgo(state.lastOkAt)}`);
+  } catch (e) {
+    if (e && e.name === "AbortError") return;           // superseded, not a failure
+    if (seq !== state.listSeq) return;
+    state.loading = false;
+    setLive("error", "connection problem");
+    // KEEP THE LAST GOOD RENDER: only take over the whole pane when there is
+    // nothing on screen yet. Otherwise show a retry bar above the existing rows.
+    if (state.items.length) {
+      $("errbarTxt").textContent = `Couldn't refresh — ${e.message}`;
+      $("errbar").classList.remove("hidden");
+      showState(null);
+    } else {
+      $("errstateTxt").textContent = e.message;
+      showState("error");
+      $("table").classList.add("hidden");
+      $("empty").classList.add("hidden");
+      $("footbar").classList.add("hidden");
+    }
+  } finally {
+    if (state.listAbort === ctrl) state.listAbort = null;
+  }
+}
+
+// CURSOR RESET RULE: changing the collection, the search text, ANY facet, the
+// contacted filter, or the sort invalidates the server-side cursor. Every one
+// of those paths goes through here — clear the list, drop the cursor, refetch
+// from page one. Only "Load more" ever appends.
+function resetAndLoad() {
+  state.cursor = null;
+  state.items = [];
+  state.count = null;                   // don't leave the old total under new filters
+  $("tbody").innerHTML = "";
+  $("table").classList.add("hidden");
+  $("empty").classList.add("hidden");
+  $("footbar").classList.add("hidden");
+  renderCount();
+  loadList(false);
+}
+
+function loadMore() {
+  if (!state.cursor || state.loading) return;
+  loadList(true);
+}
+
+/* =========================================================================
+   8. DETAIL DRAWER — read-only
+   ========================================================================= */
+let lastFocused = null;
+
+function openDrawer(id, name) {
+  lastFocused = document.activeElement;
+  $("drTitle").textContent = name || "Contact";
+  $("drSub").textContent = "";
+  $("drBody").innerHTML = '<div class="state"><div class="spinner"></div>Loading details…</div>';
+  $("scrim").classList.remove("hidden");
+  $("drawer").classList.remove("hidden");
+  $("drawer").setAttribute("aria-hidden", "false");
+  $("drClose").focus();
+  loadDetail(id);
+}
+
+function closeDrawer() {
+  $("scrim").classList.add("hidden");
+  $("drawer").classList.add("hidden");
+  $("drawer").setAttribute("aria-hidden", "true");
+  state.detailSeq++;                                   // drop any in-flight detail
+  if (lastFocused && lastFocused.focus) lastFocused.focus();
+}
+
+async function loadDetail(id) {
+  const seq = ++state.detailSeq;
+  try {
+    const body = await apiGet(`/contacts/${encodeURIComponent(id)}`);
+    if (seq !== state.detailSeq) return;
+    renderDetail(body.contact || {});
+  } catch (e) {
+    if (seq !== state.detailSeq) return;
+    $("drBody").innerHTML =
+      `<div class="state err"><div class="big">Couldn't load this contact</div><div>${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderDetail(c) {
+  $("drTitle").textContent = c.name || "Contact";
+  const subBits = [c.title, c.company].filter(Boolean).map(String);
+  $("drSub").textContent = subBits.join(" · ");
+
+  const li = safeUrl(c.linkedin);
+  const mail = c.email ? String(c.email) : "";
+  const rows = [
+    ["Email", mail
+      ? `<a href="mailto:${esc(encodeURIComponent(mail).replace(/%40/g, "@"))}">${esc(mail)}</a>` +
+        (c.email_status ? ` ${emailChip(c.email_status)}` : "")
+      : '<span class="sub">not revealed</span>'],
+    ["Company", dash(c.company)],
+    ["Title", dash(c.title)],
+    ["Department", dash(c.department)],
+    ["Role", dash(c.role)],
+    ["Segment", dash(c.segment)],
+    ["Seniority", dash(c.seniority)],
+    ["Location", dash(c.location)],
+    ["LinkedIn", li
+      ? `<a href="${esc(li)}" target="_blank" rel="noopener noreferrer nofollow">${esc(li)}</a>`
+      : '<span class="sub">—</span>'],
+    ["Contacted", c.emailed
+      ? '<span class="chip ok"><span class="cdot"></span>Contacted</span>'
+      : '<span class="sub">no automated send</span>'],
+    // c.crm is a boolean, so dash() would render the literal string "false"
+    // for the ~18.8K contacts that aren't promoted. Mirror the Contacted row.
+    ["CRM", c.crm
+      ? '<span class="chip ok"><span class="cdot"></span>In CRM</span>'
+      : '<span class="sub">not in CRM</span>'],
+  ];
+
+  let html = `<dl class="kv">` +
+    rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("") + `</dl>`;
+
+  if (c.headline) html += `<div class="sect">Headline</div><div class="prose">${esc(c.headline)}</div>`;
+  if (c.persona_summary) html += `<div class="sect">Persona</div><div class="prose">${esc(c.persona_summary)}</div>`;
+
+  // intel grouped by category, in first-seen order
+  const intel = Array.isArray(c.intel) ? c.intel : [];
+  if (intel.length) {
+    const groups = new Map();
+    for (const row of intel) {
+      if (!row) continue;
+      const cat = row.category || "General";
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(row);
+    }
+    html += `<div class="sect">Intel</div>`;
+    for (const [cat, list] of groups) {
+      html += `<div class="intel-cat">${esc(cat)}</div>`;
+      html += list.map(r =>
+        `<div class="intel-item"><div class="claim">${esc(r.claim)}</div>` +
+        (r.researched_at ? `<div class="when">${esc(fmtDate(r.researched_at))}</div>` : "") +
+        `</div>`).join("");
+    }
+  }
+
+  // NOTE: c.photo_url is deliberately not rendered. An <img> to a third-party
+  // host would be an external request from a page that must make none, and it
+  // would leak the viewer's IP to that host.
+
+  $("drBody").innerHTML = html;
+}
+
+/* =========================================================================
+   9. THEME — Notion does not pass its theme into the iframe, so the manual
+   toggle is authoritative. Order: ?theme= > stored preference > OS (CSS-only).
+   ========================================================================= */
+function applyTheme(mode) {
+  if (mode === "dark" || mode === "light") document.documentElement.setAttribute("data-theme", mode);
+  else document.documentElement.removeAttribute("data-theme");
+  const isDark = mode === "dark" ||
+    (mode !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const btn = $("themeBtn");
+  btn.textContent = isDark ? "☀" : "☾";
+  btn.setAttribute("aria-pressed", String(isDark));
+  btn.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
+}
+function currentThemeIsDark() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr) return attr === "dark";
+  return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+}
+
+/* =========================================================================
+   10. WIRING
+   ========================================================================= */
+
+// search: >= SEARCH_MIN chars (server requirement), debounced. Clearing the box
+// back to empty is itself a change and must reload the unfiltered list.
+let searchTimer = null;
+$("q").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const v = $("q").value.trim();
+    const effective = v.length >= CONFIG.SEARCH_MIN ? v : "";
+    if (effective === state.q) return;                 // nothing the server cares about changed
+    state.q = effective;
+    resetAndLoad();
+  }, CONFIG.SEARCH_DEBOUNCE_MS);
+});
+
+$("emailedSel").addEventListener("change", () => {
+  state.emailed = $("emailedSel").value;
+  resetAndLoad();
+});
+
+$("collSel").addEventListener("change", async () => {
+  state.collectionId = $("collSel").value;
+  // a new collection has its own vocabulary — drop every filter, not just the cursor
+  state.filters = {};
+  state.q = ""; $("q").value = "";
+  state.emailed = ""; $("emailedSel").value = "";
+  renderStrip();
+  resetAndLoad();
+  loadFacets();
+});
+
+$("clearBtn").addEventListener("click", () => {
+  state.filters = {};
+  state.q = ""; $("q").value = "";
+  state.emailed = ""; $("emailedSel").value = "";
+  document.querySelectorAll("#facets select[data-facet]").forEach(s => { s.value = ""; });
+  resetAndLoad();
+});
+
+document.querySelectorAll("thead th.sortable").forEach(th => {
+  const key = th.dataset.sort;
+  if (!CONFIG.SORTABLE.includes(key)) return;
+  const activate = () => {
+    if (state.sort === key) state.dir = state.dir === "asc" ? "desc" : "asc";
+    else { state.sort = key; state.dir = "asc"; }
+    renderSortHeaders();
+    resetAndLoad();                                    // sort change resets the cursor
+  };
+  th.addEventListener("click", activate);
+});
+
+// row click / keyboard: the name cell holds a real <button>, so keyboard users
+// get the drawer without a tabindex hack; clicking anywhere else in the row is
+// a mouse convenience.
+$("tbody").addEventListener("click", ev => {
+  if (ev.target.closest("a")) return;                  // let the LinkedIn link win
+  const tr = ev.target.closest("tr[data-id]");
+  if (!tr) return;
+  const name = tr.querySelector(".namebtn");
+  openDrawer(tr.dataset.id, name ? name.textContent : "");
+});
+
+$("moreBtn").addEventListener("click", loadMore);
+$("errRetry").addEventListener("click", () => loadList(false));
+$("errbarRetry").addEventListener("click", () => loadList(false));
+$("drClose").addEventListener("click", closeDrawer);
+$("scrim").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", ev => {
+  if (ev.key === "Escape" && !$("drawer").classList.contains("hidden")) closeDrawer();
+});
+
+$("themeBtn").addEventListener("click", () => {
+  const next = currentThemeIsDark() ? "light" : "dark";
+  applyTheme(next);
+  lsSet(CONFIG.THEME_KEY, next);                       // guarded: may be a no-op
+});
+
+// infinite scroll: sentinel at the bottom of the ONLY scroller. The explicit
+// "Load more" button stays visible as the fallback for environments where the
+// observer never fires (and for keyboard users).
+if ("IntersectionObserver" in window) {
+  new IntersectionObserver(entries => {
+    if (entries.some(e => e.isIntersecting)) loadMore();
+  }, { root: $("scroll"), rootMargin: "300px" }).observe($("sentinel"));
+}
+
+/* =========================================================================
+   11. BOOT
+   ========================================================================= */
+async function start() {
+  $("title").textContent = CONFIG.TITLE;
+
+  const themeParam = param("theme");
+  applyTheme(themeParam === "dark" || themeParam === "light" ? themeParam : (lsGet(CONFIG.THEME_KEY) || ""));
+
+  const seedQ = param("q").trim();
+  if (seedQ.length >= CONFIG.SEARCH_MIN) { state.q = seedQ; $("q").value = seedQ; }
+
+  renderSortHeaders();
+  setInterval(tickLive, 30000);
+
+  if (!TOKEN) {
+    setLive("error", "no access key");
+    $("errstateTxt").textContent =
+      "This page needs the access key that the Notion embed link carries (?k=…). Open it from the Notion page rather than by pasting the bare URL.";
+    showState("error");
+    return;
+  }
+
+  try {
+    await loadCollections();
+  } catch (e) {
+    setLive("error", "connection problem");
+    $("errstateTxt").textContent = e.message;
+    showState("error");
+    return;
+  }
+  loadFacets();
+  loadList(false);
+}
+start();
+</script>
+</body>
+</html>
