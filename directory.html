@@ -904,7 +904,13 @@ function renderDetail(c) {
     rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("") + `</dl>`;
 
   if (c.headline) html += `<div class="sect">Headline</div><div class="prose">${esc(c.headline)}</div>`;
-  if (c.persona_summary) html += `<div class="sect">Persona</div><div class="prose">${esc(c.persona_summary)}</div>`;
+
+  // persona_summary is deliberately NOT rendered. It is the AI's prose write-up
+  // of the same material the intel section below presents grouped by category,
+  // so showing both means reading the same content twice, once as a wall of
+  // text. The intel list is the better surface for it. The field is still
+  // returned by /contacts/:id for other consumers — do not re-add it here
+  // without removing the intel section.
 
   // intel grouped by category, in first-seen order
   const intel = Array.isArray(c.intel) ? c.intel : [];
