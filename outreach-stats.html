@@ -97,6 +97,7 @@
   .takeaway { font-size:13px; color:var(--muted-text); line-height:1.45; margin:10px 2px 0; }
   .takeaway b { color:var(--body-text); }
   .foot { color:var(--faint-text); font-size:12px; line-height:1.45; margin-top:10px; }
+  tfoot td { padding:9px 12px; border-top:2px solid var(--body-text); background:var(--surface); }
   .empty { text-align:center; padding:40px 16px; color:var(--muted-text); }
   .empty .big { font-size:16px; font-weight:600; color:var(--body-text); margin-bottom:5px; }
   @media (max-width:640px){ .stat{ flex-basis:33%; } }
@@ -137,6 +138,17 @@ const pct = (n,d) => d ? Math.round(n/d*100) : 0;
 function stat(k,v,rate,hi){ return `<div class="stat ${hi?'hi':''}"><div class="k">${k}</div>`
   + `<div class="v">${v}${rate!=null?`<span class="r">${rate}</span>`:''}</div></div>`; }
 
+function totals(d){
+  const sum = k => d.sequence.reduce((n,s)=> n + (typeof s[k]==="number" ? s[k] : 0), 0);
+  const emails = sum("sent");
+  if (!emails) return "";
+  return `<tfoot><tr class="totals">
+      <td><b>Total emails</b> <span class="dim">· across all steps</span></td>
+      <td class="num"><b>${emails}</b></td>
+      <td class="num"><b>${sum("opened")}</b></td>
+      <td class="num"><b>${sum("clicked")}</b></td><td></td></tr></tfoot>`;
+}
+
 function funnel(d){
   const drop = (n,base) => (n!=null && base) ? `<span class="drop">${Math.round(n/base*100)}%</span>` : "";
   const row = s => s.status === "paused"
@@ -150,11 +162,12 @@ function funnel(d){
     <div class="card-table"><div class="table-scroll"><table>
       <thead><tr><th>Step</th><th class="num">Emails sent</th><th class="num">Opened</th><th class="num">Clicked</th><th></th></tr></thead>
       <tbody>${d.sequence.map(row).join("")}</tbody>
+      ${totals(d)}
     </table></div></div>
     <div class="seqsum">
       <span><b>${o.replied}</b>replied <span class="dim">· at any step</span></span>
       <span><b>${o.completed}</b>completed the full sequence</span>
-      <span><b>${o.in_progress}</b>in progress <span class="dim">· still moving through the steps</span></span>
+      <span><b>${o.in_progress}</b>still in the sequence <span class="dim">· got the cold email, has not finished</span></span>
     </div>`;
 }
 
@@ -174,7 +187,7 @@ function renderSGO(d){
   const t=d.top, oR=pct(t.opened,t.delivered), cR=pct(t.clicked,t.delivered);
   const upd = DATA.generated_at ? new Date(DATA.generated_at).toISOString().slice(0,10) : "";
   document.getElementById("scope").innerHTML =
-    `<b>${d.scope.contacts}</b> contacts · <b>${d.scope.cells}</b> messages${upd?` · updated ${upd}`:""}`;
+    `<b>${d.scope.contacts}</b> cold emails delivered · <b>${d.scope.cells}</b> messages${upd?` · updated ${upd}`:""}`;
   const rows = d.messages.map(m=>({...m, or:m.opened/m.delivered, ready:m.delivered>=MIN_N}));
   const ready = rows.filter(r=>r.ready).sort((a,b)=>b.or-a.or);
   const early = rows.filter(r=>!r.ready).sort((a,b)=>b.or-a.or);
@@ -206,7 +219,7 @@ function renderSGO(d){
       </tbody>
     </table></div></div>
     <div class="takeaway">${takeaway(d)}</div>
-    <div class="foot"><b>Two units on this page.</b> “People reached” counts individuals who received at least one email. The step table counts emails, so its total is larger — every step a person receives adds a row there. Neither number is wrong; they answer different questions.<br>All rates are filtered (bot-screened) events ÷ delivered. Opens are undercounted by inbox privacy
+    <div class="foot"><b>Two units, and two sources.</b> “People reached” is Apollo’s own count of individuals who received at least one email anywhere in the sequence. Everything below it is counted from our send ledger. The two are measured independently and drift by a few — if Apollo says 209 and the ledger says 208, neither is broken. The step table counts emails, so its total is larger — every step a person receives adds a row there. Neither number is wrong; they answer different questions.<br>All rates are filtered (bot-screened) events ÷ delivered. Opens are undercounted by inbox privacy
       protection, so clicks &amp; replies are the more trustworthy signal. Verdicts (on open rate): Scale ≥25% · Working
       12–25% · Revise &lt;12% · Gathering &lt;10 sent. Counts only. Synced daily from Apollo.</div>`;
 }
