@@ -146,15 +146,15 @@ function funnel(d){
       + `<td class="num">${s.opened}${drop(s.opened,s.sent)}</td>`
       + `<td class="num">${s.clicked}${drop(s.clicked,s.sent)}</td><td></td></tr>`;
   const o = d.outcomes;
-  return `<div class="lbl">Sequence · opens &amp; clicks as % of delivered, per step</div>
+  return `<div class="lbl">Sequence · one row per step. Counts are <b>emails</b>, not people — someone who got the cold email and one follow-up appears on two rows. Opens and clicks are shown as % of that step's own sends.</div>
     <div class="card-table"><div class="table-scroll"><table>
-      <thead><tr><th>Step</th><th class="num">Sent</th><th class="num">Opened</th><th class="num">Clicked</th><th></th></tr></thead>
+      <thead><tr><th>Step</th><th class="num">Emails sent</th><th class="num">Opened</th><th class="num">Clicked</th><th></th></tr></thead>
       <tbody>${d.sequence.map(row).join("")}</tbody>
     </table></div></div>
     <div class="seqsum">
       <span><b>${o.replied}</b>replied <span class="dim">· at any step</span></span>
       <span><b>${o.completed}</b>completed the full sequence</span>
-      <span><b>${o.in_progress}</b>in progress <span class="dim">· paused before FU1</span></span>
+      <span><b>${o.in_progress}</b>in progress <span class="dim">· still moving through the steps</span></span>
     </div>`;
 }
 
@@ -187,7 +187,7 @@ function renderSGO(d){
       + `<td><span class="chip ${vd.cls}"><span class="cdot"></span>${vd.label}</span></td></tr>`; };
   return `
     <div class="strip">
-      ${stat("Delivered", t.delivered)}
+      ${stat("People reached", t.delivered)}
       ${stat("Opened", t.opened, oR+"%", true)}
       ${stat("Clicked", t.clicked, cR+"%", true)}
       ${stat("Replied", t.replied)}
@@ -206,14 +206,16 @@ function renderSGO(d){
       </tbody>
     </table></div></div>
     <div class="takeaway">${takeaway(d)}</div>
-    <div class="foot">All rates are filtered (bot-screened) events ÷ delivered. Opens are undercounted by inbox privacy
+    <div class="foot"><b>Two units on this page.</b> “People reached” counts individuals who received at least one email. The step table counts emails, so its total is larger — every step a person receives adds a row there. Neither number is wrong; they answer different questions.<br>All rates are filtered (bot-screened) events ÷ delivered. Opens are undercounted by inbox privacy
       protection, so clicks &amp; replies are the more trustworthy signal. Verdicts (on open rate): Scale ≥25% · Working
       12–25% · Revise &lt;12% · Gathering &lt;10 sent. Counts only. Synced daily from Apollo.</div>`;
 }
 function renderEmpty(brand){
   document.getElementById("scope").innerHTML = "";
-  return `<div class="card-table"><div class="empty"><div class="big">${brand} isn't sending yet</div>
-    <div>Runs on its own Apollo sequence — appears here when it goes live (Phase B), same view.</div></div></div>`;
+  return `<div class="card-table"><div class="empty"><div class="big">Nothing synced for ${brand} yet</div>
+    <div>${brand} runs its own Apollo sequence. A wave appears here after two things happen:
+    it is recorded to the send ledger, and the next daily sync runs. If you uploaded today,
+    expect it tomorrow morning.</div></div></div>`;
 }
 function select(brand){
   document.querySelectorAll(".tab").forEach(t=>t.setAttribute("aria-selected",String(t.dataset.brand===brand)));
